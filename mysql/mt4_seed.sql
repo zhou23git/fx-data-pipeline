@@ -12,7 +12,9 @@ INSERT INTO mt4.MT4_GROUPS (SERVER, `GROUP`, CURRENCY) VALUES
   ('trade/mt4', 'RetailEUR',   'EUR'),
   ('trade/mt4', 'B2B',         'USD'),
   ('trade/mt4', 'Coverage',    'USD'),
-  ('trade/mt4', 'White Label', 'USD');
+  ('trade/mt4', 'White Label', 'USD'),
+  ('trade/mt4', 'House',       'USD'),
+  ('trade/mt4', 'Rebate',      'USD');
 
 INSERT INTO mt4.MT4_GROUP_SECURITIES
   (SERVER, `GROUP`, SEC_INDEX, SPREAD_DIFF, COMM_BASE, LOT_MIN, LOT_MAX, LOT_STEP) VALUES
@@ -36,7 +38,53 @@ INSERT INTO mt4.MT4_GROUP_SECURITIES
   ('trade/mt4', 'Coverage',    3,  0,  0, 0.01, 100, 0.01),
   ('trade/mt4', 'White Label', 1, 10, 20, 0.01, 100, 0.01),
   ('trade/mt4', 'White Label', 2,  2, 10, 0.01, 100, 0.01),
-  ('trade/mt4', 'White Label', 3,  0,  0, 0.01, 100, 0.01);
+  ('trade/mt4', 'White Label', 3,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'House',       1,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'House',       2,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'House',       3,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'Rebate',      1,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'Rebate',      2,  0,  0, 0.01, 100, 0.01),
+  ('trade/mt4', 'Rebate',      3,  0,  0, 0.01, 100, 0.01);
+
+-- One-off accounts. Retail accounts (1000-8999) are made by fxgen/accounts.py.
+-- Names and phones are invented: UK numbers use Ofcom's drama ranges
+-- (020 7946 0xxx, 07700 900xxx); NZ numbers use a made-up 555 block.
+INSERT INTO mt4.MT4_USERS
+  (SERVER, LOGIN, `GROUP`, NAME, LEAD_SOURCE, PHONE, COMMENT, AGENT_ACCOUNT, CURRENCY, REGDATE) VALUES
+  ('trade/mt4',     10, 'House',       'Tasman Markets NZ Ltd',             '',       '+64 9 555 0100',    'NZ B Book Giveup',     0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',     20, 'House',       'Tasman Markets NZ Ltd',             'NZ_TRD', '+64 9 555 0100',    'NZ Trading',           0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',     30, 'House',       'Tasman Markets NZ Ltd',             '',       '+64 9 555 0100',    'NZ All Client Giveup', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',     40, 'House',       'Tasman Markets UK Ltd',             '',       '+44 20 7946 0100',  'UK All Client Giveup', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',     50, 'House',       'Tasman Markets UK Ltd',             'UK_TRD', '+44 20 7946 0100',  'UK Trading',           0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    100, 'Coverage',    'UK B2B Coverage 1',                 'UK_COV', '+44 20 7946 0101',  'UK B2B Giveup Client', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    200, 'Coverage',    'UK B2B Coverage 2',                 'UK_COV', '+44 20 7946 0101',  'UK B2B Giveup Client', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    300, 'Coverage',    'NZ B2B Coverage 1',                 'NZ_COV', '+64 9 555 0101',    'NZ B2B Giveup Client', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    400, 'Coverage',    'NZ B2B Coverage 2',                 'NZ_COV', '+64 9 555 0101',    'NZ B2B Giveup Client', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    500, 'B2B',         'Alpha Capital Ltd',                 'UK_TRD', '+44 20 7946 0210',  'UK B2B MT4 Client',    0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    600, 'B2B',         'Northgate Asset Management',        'UK_TRD', '+44 20 7946 0220',  'UK B2B MT4 Client',    0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    700, 'B2B',         'Bluewater Brokers',                 'NZ_TRD', '+64 9 555 0230',    'NZ B2B MT4 Client',    0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    800, 'B2B',         'Kestrel Markets',                   'NZ_TRD', '+64 9 555 0240',    'NZ B2B MT4 Client',    0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',    900, 'B2B',         'Harbour FX Partners',               'NZ_TRD', '+64 9 555 0250',    'NZ B2B MT4 Client',    0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',   9990, 'Rebate',      'Southern Cross Introducers',        '',       '+64 21 555 0310',   'Rebate Accounts',      0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',   9991, 'Rebate',      'Kiwi Trader Academy',               '',       '+64 21 555 0320',   'Rebate Accounts',      0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',   9992, 'Rebate',      'Pacific Edge Partners',             '',       '+64 21 555 0330',   'Rebate Accounts',      0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4',   9993, 'Rebate',      'Waitemata FX Club',                 '',       '+64 21 555 0340',   'Rebate Accounts',      0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4', 100000, 'Coverage',    'Meridian Brokers WL Coverage',      'UK_COV', '+44 20 7946 0400',  'White Label Coverage', 0, 'USD', '2026-10-01 09:00:00'),
+  ('trade/mt4', 100001, 'White Label', 'Amelia Taylor',                     'WL',     '+44 7700 900401',   'White Label Clients',  0, 'USD', '2026-10-02 10:14:00'),
+  ('trade/mt4', 100002, 'White Label', 'Lukas Muller',                      'WL',     '+44 7700 900402',   'White Label Clients',  0, 'USD', '2026-10-02 13:41:00'),
+  ('trade/mt4', 100003, 'White Label', 'Giulia Rossi',                      'WL',     '+44 7700 900403',   'White Label Clients',  0, 'USD', '2026-10-03 09:27:00'),
+  ('trade/mt4', 100004, 'White Label', 'Omar Haddad',                       'WL',     '+44 7700 900404',   'White Label Clients',  0, 'USD', '2026-10-03 16:05:00'),
+  ('trade/mt4', 100005, 'White Label', 'Naledi Dlamini',                    'WL',     '+44 7700 900405',   'White Label Clients',  0, 'USD', '2026-10-05 11:52:00'),
+  ('trade/mt4', 100006, 'White Label', 'Wei Chen',                          'WL',     '+44 7700 900406',   'White Label Clients',  0, 'USD', '2026-10-06 08:33:00'),
+  ('trade/mt4', 100007, 'White Label', 'Mariana Silva',                     'WL',     '+44 7700 900407',   'White Label Clients',  0, 'USD', '2026-10-06 19:20:00'),
+  ('trade/mt4', 100008, 'White Label', 'Piotr Nowak',                       'WL',     '+44 7700 900408',   'White Label Clients',  0, 'USD', '2026-10-07 12:08:00'),
+  ('trade/mt4', 100009, 'White Label', 'Siti Rahman',                       'WL',     '+44 7700 900409',   'White Label Clients',  0, 'USD', '2026-10-08 15:46:00'),
+  ('trade/mt4', 100010, 'White Label', 'Daniel Brown',                      'WL',     '+44 7700 900410',   'White Label Clients',  0, 'USD', '2026-10-09 10:01:00'),
+  ('trade/mt4', 100011, 'White Label', 'Layla Khan',                        'WL',     '+44 7700 900411',   'White Label Clients',  0, 'USD', '2026-10-12 14:37:00'),
+  ('trade/mt4', 100012, 'White Label', 'Diego Hernandez',                   'WL',     '+44 7700 900412',   'White Label Clients',  0, 'USD', '2026-10-13 09:58:00'),
+  ('trade/mt4', 100013, 'White Label', 'Priya Patel',                       'WL',     '+44 7700 900413',   'White Label Clients',  0, 'USD', '2026-10-14 17:22:00'),
+  ('trade/mt4', 100014, 'White Label', 'Minh Nguyen',                       'WL',     '+44 7700 900414',   'White Label Clients',  0, 'USD', '2026-10-16 11:15:00'),
+  ('trade/mt4', 100015, 'White Label', 'Chinedu Okafor',                    'WL',     '+44 7700 900415',   'White Label Clients',  0, 'USD', '2026-10-19 13:49:00');
 
 -- Swap values are left NULL: a plugin sets them daily.
 INSERT INTO mt4.MT4_SYMBOLS

@@ -88,49 +88,20 @@ CREATE TABLE MT4_GROUP_MARGINS (
 );
 
 -- ---------------------------------------------------------------------------
--- Accounts: the MT4 MySQL export table, column for column, plus SERVER.
+-- Accounts (MT4_USERS export), cut down to the fields this project uses.
+-- Login ranges: 10-50 House, 100-400 Coverage, 500-900 B2B, 1000-8999 Retail,
+-- 9990-9999 Rebate, 100000 White Label coverage, 100001-100100 White Label.
 -- ---------------------------------------------------------------------------
 CREATE TABLE MT4_USERS (
-    SERVER              VARCHAR(16)  NOT NULL,
-    LOGIN               INT          NOT NULL,
-    `GROUP`             VARCHAR(16)  NOT NULL,
-    ENABLE              INT          NOT NULL DEFAULT 1,
-    ENABLE_CHANGE_PASS  INT          NOT NULL DEFAULT 1,
-    ENABLE_READONLY     INT          NOT NULL DEFAULT 0,
-    ENABLE_OTP          INT          NOT NULL DEFAULT 0,
-    PASSWORD_PHONE      VARCHAR(32)  NOT NULL DEFAULT '',
-    NAME                VARCHAR(128) NOT NULL DEFAULT '',
-    COUNTRY             VARCHAR(32)  NOT NULL DEFAULT '',
-    CITY                VARCHAR(32)  NOT NULL DEFAULT '',
-    STATE               VARCHAR(32)  NOT NULL DEFAULT '',
-    ZIPCODE             VARCHAR(16)  NOT NULL DEFAULT '',
-    ADDRESS             VARCHAR(128) NOT NULL DEFAULT '',
-    LEAD_SOURCE         VARCHAR(32)  NOT NULL DEFAULT '',
-    PHONE               VARCHAR(32)  NOT NULL DEFAULT '',
-    EMAIL               VARCHAR(48)  NOT NULL DEFAULT '',
-    COMMENT             VARCHAR(64)  NOT NULL DEFAULT '',
-    ID                  VARCHAR(32)  NOT NULL DEFAULT '',     -- free field; often the CRM id
-    STATUS              VARCHAR(16)  NOT NULL DEFAULT '',
-    REGDATE             DATETIME     NOT NULL,                -- server time
-    LASTDATE            DATETIME     NOT NULL,
-    LEVERAGE            INT          NOT NULL DEFAULT 100,
-    AGENT_ACCOUNT       INT          NOT NULL DEFAULT 0,      -- IB login that earns agent commission
-    TIMESTAMP           INT          NOT NULL DEFAULT 0,      -- unix time of last change
-    BALANCE             DOUBLE       NOT NULL DEFAULT 0,
-    PREVMONTHBALANCE    DOUBLE       NOT NULL DEFAULT 0,
-    PREVBALANCE         DOUBLE       NOT NULL DEFAULT 0,
-    CREDIT              DOUBLE       NOT NULL DEFAULT 0,
-    INTERESTRATE        DOUBLE       NOT NULL DEFAULT 0,
-    TAXES               DOUBLE       NOT NULL DEFAULT 0,
-    SEND_REPORTS        INT          NOT NULL DEFAULT 1,
-    MQID                INT UNSIGNED NOT NULL DEFAULT 0,
-    USER_COLOR          INT          NOT NULL DEFAULT 0,
-    EQUITY              DOUBLE       NOT NULL DEFAULT 0,
-    MARGIN              DOUBLE       NOT NULL DEFAULT 0,
-    MARGIN_LEVEL        DOUBLE       NOT NULL DEFAULT 0,
-    MARGIN_FREE         DOUBLE       NOT NULL DEFAULT 0,
-    CURRENCY            VARCHAR(16)  NOT NULL DEFAULT 'USD',
-    API_DATA            BLOB         NULL,
-    MODIFY_TIME         DATETIME     NOT NULL,
+    SERVER         VARCHAR(16)  NOT NULL,
+    LOGIN          INT          NOT NULL,
+    `GROUP`        VARCHAR(16)  NOT NULL,
+    NAME           VARCHAR(128) NOT NULL DEFAULT '',
+    LEAD_SOURCE    VARCHAR(32)  NOT NULL DEFAULT '',     -- entity and desk, e.g. NZ_TRD, UK_COV, WL
+    PHONE          VARCHAR(32)  NOT NULL DEFAULT '',
+    COMMENT        VARCHAR(64)  NOT NULL DEFAULT '',
+    AGENT_ACCOUNT  INT          NOT NULL DEFAULT 0,      -- rebate login paid for this account; 0 = none
+    CURRENCY       VARCHAR(16)  NOT NULL,                -- deposit currency, same as the group's
+    REGDATE        DATETIME     NOT NULL,                -- registration, server time
     PRIMARY KEY (SERVER, LOGIN)
 );

@@ -55,6 +55,24 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
 - Groups, simplified by Josh to `SERVER`, `GROUP`, `CURRENCY`: RetailUSD,
   RetailGBP, RetailJPY, RetailEUR, B2B, Coverage, White Label.
 - A client's company name goes on the login (`MT4_USERS.NAME`), not the group.
+- Accounts (`MT4_USERS`), cut down by Josh to group, name, lead source, phone,
+  comment, agent account and currency. `REGDATE` was kept as well so accounts
+  made on different days can be told apart. Two entities, NZ and UK; the
+  entity shows in `LEAD_SOURCE` (`NZ_TRD`, `UK_TRD`, `NZ_COV`, `UK_COV`, `WL`).
+
+  | Logins | Group | What |
+  |---|---|---|
+  | 10-50 | House | NZ B-book giveup, NZ trading, NZ and UK all-client giveups, UK trading |
+  | 100-400 | Coverage | Giveup copies of B2B clients (100, 200 UK; 300, 400 NZ) |
+  | 500-900 | B2B | B2B MT4 clients (500, 600 UK; 700-900 NZ) |
+  | 1000-8999 | RetailUSD/GBP/EUR/JPY | Retail clients, NZ_TRD. Made by `fxgen/accounts.py`: a batch at the start, then a few a day |
+  | 9990-9999 | Rebate | IB partners (4 used). No more will be made |
+  | 100000 | Coverage | White Label coverage |
+  | 100001-100100 | White Label | White Label clients (15 used). No more will be made |
+
+- Rebates: about 2.5% of new retail accounts pay a rebate, shown by
+  `AGENT_ACCOUNT` = a Rebate login. New retail accounts keep being assigned to
+  the existing Rebate logins at that rate.
 - Group security settings (`MT4_GROUP_SECURITIES`), as Josh set them in MT4
   Administrator:
   - `SPREAD_DIFF`: an integer in points (the last priced decimal, a tenth of
@@ -90,8 +108,11 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
     is the same as `COMM_BASE` deposit currency per 100,000 of deposit
     currency. So, per side: `COMM_BASE` x lots x `CONTRACT_SIZE` x
     `CONV_RATE1` / 100,000, in deposit currency, with no extra rate table.
-  - `LOT_MIN` 0.01 and `LOT_MAX` 100, in lots. (Trade `VOLUME` in the export
-    is still in hundredths of a lot.)
+  - `LOT_MIN` 0.01 and `LOT_MAX` 100, in lots: in config, 1 means 1 lot.
+    Min 0.01 lets FX clients trade 1,000 units at a time.
+  - Trades are different: `MT4_TRADES.VOLUME` is an integer in hundredths of
+    a lot (0.01 lot = 1, 1 lot = 100). Josh's ELT gets units with
+    `VOLUME` / 100 x `CONTRACT_SIZE`.
 - MT4 quirks to keep: one row per ticket updated in place (`MODIFY_TIME`);
   open trades have `CLOSE_TIME = 1970-01-01`; `VOLUME` in hundredths of a lot;
   `CMD` 6 = balance operation with amount in `PROFIT`; partial close creates a
