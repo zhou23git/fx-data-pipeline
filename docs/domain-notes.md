@@ -22,9 +22,76 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
   Column lists were confirmed by Josh as correct or close enough.
 - Config (not in the standard export, modelled on Manager API records):
   security groups, symbols, groups, group-per-security settings
-  (`SPREAD_DIFF` = MT4 group markup, commission, lot limits), group margins.
+  (`SPREAD_DIFF`, commission, lot limits; details below), group margins.
 - Security groups as Josh defined them: 1 FX, 2 METAL, 3 CFD (USOIL, UKOIL,
   NAS100, SP500).
+- Symbol price fields, as Josh used them:
+  - `DIGITS`: decimal places in the price (5 for EURUSD, 3 for USDJPY).
+  - `POINT`: the smallest price step, 1 / 10^`DIGITS` (0.00001 for EURUSD).
+    `SPREAD_DIFF` is counted in points.
+  - `TICK_SIZE`: always equal to `POINT` here (never coarser).
+  - `TICK_VALUE`: used to mark **mini contracts**. Usually `TICK_VALUE` =
+    `TICK_SIZE` (ratio 1). When they differ, usually on SP500 and NAS100, the
+    symbol is a mini lot: `TICK_SIZE` 0.01 and `TICK_VALUE` 0.001 (Josh's
+    recollection), a ratio of 0.1, so the trade earns 1/10th of the price
+    move.
+  - P/L = lots x `CONTRACT_SIZE` x (close or current price - open price) x
+    conversion rate x (`TICK_VALUE` / `TICK_SIZE`). Sells use
+    open - close.
+- Symbols (`MT4_SYMBOLS`), cut down by Josh to description, currency, type,
+  digits, point, contract size, tick size and value, and swaps:
+  - 13 FX pairs, each in three versions: plain (`EURUSD`), `.retail` and
+    `.b2b`. Josh chose `.retail` even though real MT4 caps symbols at 11
+    characters, so `SYMBOL` is `VARCHAR(16)`.
+  - Metals XAUUSD and XAGUSD (currency XAU / XAG, contract 100). CFDs USOIL
+    and UKOIL (contract 10), NAS100 and SP500 (contract 1, mini). CFDs have
+    currency USD.
+  - Swaps are in points (MT4 swap type "points"). `SWAP_LONG` and
+    `SWAP_SHORT` are set daily by a plugin, so the config leaves them NULL.
+    Only FX has swaps enabled.
+- Entities: Equiti separated entities with login ranges and dedicated MT4
+  servers, not with the group's `COMPANY` field. Here there is one server, and
+  login ranges simulate the entities.
+- Groups, simplified by Josh to `SERVER`, `GROUP`, `CURRENCY`: RetailUSD,
+  RetailGBP, RetailJPY, RetailEUR, B2B, Coverage, White Label.
+- A client's company name goes on the login (`MT4_USERS.NAME`), not the group.
+- Group security settings (`MT4_GROUP_SECURITIES`), as Josh set them in MT4
+  Administrator:
+  - `SPREAD_DIFF`: an integer in points (the last priced decimal, a tenth of
+    a pip on 5-digit FX). Josh works out the markup in price from the symbol's
+    `POINT`. He doesn't remember it as the group markup; that label comes from
+    how MT4 defines the field.
+  - Table cut down by Josh to `SPREAD_DIFF`, `COMM_BASE` and lot limits per
+    group and security group. `COMM_TYPE` and the agent (IB) commission
+    columns were dropped.
+  - Commission: Josh picked a numeric `COMM_TYPE` (mapping not remembered) and
+    entered an integer `COMM_BASE`. The effect was a fixed USD amount per
+    100,000 USD of notional. At 10: 1 lot EURUSD about $11, 1 lot USDCAD $10,
+    1 lot CADJPY about $8.50, depending on the base currency's USD rate.
+  - Commission is charged **at open only**, for both sides: when the trade
+    opens, MT4 writes 2x the per-side commission into the `COMMISSION` field
+    of the trade's `MT4_TRADES` row. There is no separate commission record.
+  - Partial close pro-rates commission between the tickets. Partial close is
+    complicated; it will be worked out later.
+  - Conversion: `MT4_TRADES.CONV_RATE1` is the rate from the symbol's base
+    currency to the deposit currency. Josh derives the quote-to-deposit rate
+    from it and the symbol price. (At work he also used an end-of-day query
+    of MT4 prices; the simulation uses `CONV_RATE1` instead.)
+    Standard MT4 may define `CONV_RATE1`/`CONV_RATE2` as profit (quote)
+    currency to deposit, with `MARGIN_RATE` for the base currency. Josh can't
+    check this. The PrimeXM bridge may have overridden it, so the simulation
+    keeps his definition: `CONV_RATE1` = base to deposit.
+  - Two rates, both needed: `CONV_RATE1` at open and `CONV_RATE2` at close.
+    Commission uses only `CONV_RATE1`, since it is charged at open.
+  - Worked example, `COMM_BASE` 10, 1 lot EURUSD at about 1.10, USD account:
+    notional 100,000 EUR = 110,000 USD, so $11 per side, and `COMMISSION` is
+    -22.00 at open.
+  - Because commission is linear in notional, `COMM_BASE` USD per 100,000 USD
+    is the same as `COMM_BASE` deposit currency per 100,000 of deposit
+    currency. So, per side: `COMM_BASE` x lots x `CONTRACT_SIZE` x
+    `CONV_RATE1` / 100,000, in deposit currency, with no extra rate table.
+  - `LOT_MIN` 0.01 and `LOT_MAX` 100, in lots. (Trade `VOLUME` in the export
+    is still in hundredths of a lot.)
 - MT4 quirks to keep: one row per ticket updated in place (`MODIFY_TIME`);
   open trades have `CLOSE_TIME = 1970-01-01`; `VOLUME` in hundredths of a lot;
   `CMD` 6 = balance operation with amount in `PROFIT`; partial close creates a
