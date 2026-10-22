@@ -1,50 +1,29 @@
 """Clock conventions shared by every simulated system.
 
-MT4 servers run on "New York close" time: midnight on the server is 17:00 in
-New York, which makes the server GMT+3 while the US is on daylight saving and
-GMT+2 otherwise. XCore records UTC with milliseconds. Keeping both conventions
-is deliberate -- lining them up is part of the exercise.
-
-US DST is computed by rule rather than with zoneinfo so the generator runs on
-Windows Python, which ships without a time zone database.
+MT4 and XCore both record GMT: MT4 in whole seconds, XCore with milliseconds.
+End of day follows the New York close, so in GMT it moves with US daylight
+saving. The trading day and market hours come from Josh's GMT EOD reference
+file, not from a rule in this module.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 
 MT4_EPOCH = "1970-01-01 00:00:00"
 
 
-def _nth_sunday(year: int, month: int, n: int) -> date:
-    first = date(year, month, 1)
-    first_sunday = first + timedelta(days=(6 - first.weekday()) % 7)
-    return first_sunday + timedelta(weeks=n - 1)
-
-
-def server_offset(utc: datetime) -> timedelta:
-    # US DST: second Sunday of March 02:00 EST (07:00 UTC) to first Sunday of
-    # November 02:00 EDT (06:00 UTC).
-    dst_start = datetime.combine(_nth_sunday(utc.year, 3, 2), time(7))
-    dst_end = datetime.combine(_nth_sunday(utc.year, 11, 1), time(6))
-    return timedelta(hours=3 if dst_start <= utc < dst_end else 2)
-
-
-def to_server(utc: datetime) -> datetime:
-    return utc + server_offset(utc)
-
-
 def server_date(utc: datetime) -> date:
-    return to_server(utc).date()
+    """Trading day a GMT time belongs to."""
+    raise NotImplementedError("Trading day comes from the GMT EOD reference file, which isn't loaded yet.")
 
 
 def is_market_open(utc: datetime) -> bool:
-    """FX trades Monday 00:00 to Friday 23:59 server time."""
-    return to_server(utc).weekday() < 5
+    raise NotImplementedError("Market hours come from the GMT EOD reference file, which isn't loaded yet.")
 
 
 def fmt_mt4(utc: datetime) -> str:
-    """MT4 MySQL export format: server time, whole seconds."""
-    return to_server(utc).strftime("%Y-%m-%d %H:%M:%S")
+    """MT4 MySQL export format: GMT, whole seconds."""
+    return utc.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def fmt_utc_ms(utc: datetime) -> str:

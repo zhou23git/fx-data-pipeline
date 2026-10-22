@@ -96,7 +96,7 @@ def make_accounts(rng: random.Random, day: date, count: int, first_login: int,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(),
-                        help="registration date, server time (default: today)")
+                        help="registration date, GMT (default: today)")
     parser.add_argument("--count", type=int, help="accounts to create (default: 2-8)")
     args = parser.parse_args()
 

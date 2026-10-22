@@ -116,7 +116,7 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
 - MT4 quirks to keep: one row per ticket updated in place (`MODIFY_TIME`);
   open trades have `CLOSE_TIME = 1970-01-01`; `VOLUME` in hundredths of a lot;
   `CMD` 6 = balance operation with amount in `PROFIT`; partial close creates a
-  new ticket (`from #` / `to #` comments); server time GMT+2/+3.
+  new ticket (`from #` / `to #` comments). Server time is GMT (see Time).
 
 ## XCore (PrimeXM bridge)
 
@@ -203,6 +203,17 @@ which is why the simulation keeps all three.
   order, rebuild the exact settings at order time. With an audit log, treat
   it as a stack and "pop" back to the setting just before the order time,
   joining on order time.
+
+## Time
+
+- **Both MT4 and XCore record times in GMT.** There is no GMT+2/+3 server
+  time here.
+- End of day (EOD) still follows the New York close, so in GMT it moves
+  with US daylight saving: about 21:00 GMT in US summer time, 22:00 GMT in
+  US winter time. Josh will provide a reference file of GMT EOD times. The
+  trading day, daily records and swap dates should come from that file.
+- The exercise starts close to a DST change (US DST ends 2026-11-01), which
+  Josh welcomes: the EOD shift will show up early in the data.
 
 ## Business context (from the resume)
 
