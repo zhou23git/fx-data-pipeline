@@ -10,8 +10,11 @@ and dbt on realistic, messy sources.
 |---|---|
 | `mysql/mt4_config.sql`: MT4 config and account tables for the local `mt4` schema | Ready |
 | `mysql/mt4_seed.sql`: MT4 config rows and one-off accounts | In progress |
-| `mysql/xcore_config.sql`: XCore config tables for the `xcore` schema | Tables created, not filled |
+| `mysql/xcore_config.sql`: XCore config tables and config audit log for the `xcore` schema | Ready |
+| `mysql/xcore_seed.sql`: providers, XCore symbols, liquidity pools, profiles | In progress |
 | `fxgen/accounts.py`: creates retail accounts in MySQL, run daily | Ready |
+| `fxgen/pools.py`: adds or drops providers in liquidity pools and sets connector accounts' pools, logging each change | Ready; random mode waits on rules |
+| `fxgen/profiles.py`: sets profile markup and pool per symbol, plus random daily markup, logging each change | Ready |
 | `fxgen/`: trade data generator | Work in progress, not runnable yet; will be adapted to read config from MySQL |
 | Snowflake and dbt | Not started |
 

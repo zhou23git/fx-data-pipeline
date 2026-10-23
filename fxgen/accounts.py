@@ -10,14 +10,12 @@ MYSQL_PASSWORD.
 from __future__ import annotations
 
 import argparse
-import os
 import random
 import sys
 from collections import Counter
 from datetime import date, datetime, timedelta
 
-import mysql.connector
-
+from fxgen.db import connect
 from fxgen.reference import FIRST_NAMES, LAST_NAMES
 
 SERVER = "trade/mt4"
@@ -26,18 +24,6 @@ CURRENCY_WEIGHTS = {"USD": 50, "EUR": 20, "GBP": 18, "JPY": 12}
 REBATE_SHARE = 0.025
 # Invented numbers: UK uses Ofcom's 07700 900xxx drama range.
 PHONE_FORMATS = [("+64 21 555 ", 4), ("+44 7700 900", 3)]
-
-
-def connect():
-    password = os.environ.get("MYSQL_PASSWORD")
-    if password is None:
-        sys.exit("Set MYSQL_PASSWORD (and MYSQL_HOST/PORT/USER if not 127.0.0.1:3306 root).")
-    return mysql.connector.connect(
-        host=os.environ.get("MYSQL_HOST", "127.0.0.1"),
-        port=int(os.environ.get("MYSQL_PORT", "3306")),
-        user=os.environ.get("MYSQL_USER", "root"),
-        password=password,
-    )
 
 
 def retail_groups(cur) -> dict[str, str]:

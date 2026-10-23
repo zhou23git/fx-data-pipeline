@@ -124,19 +124,113 @@ Josh's setup order, which is also the dependency order of the tables:
 
 1. **Providers** (PrimeXM: makers): name, FIX connection specs.
 2. **Provider symbol -> XCore symbol mapping.** Many to one: Bank A
-   `EUR/USD` and Bank B `EURUSD.ecn` both map to XCore `EURUSD`.
+   `EUR/USD` and Bank B `EURUSD.ecn` both map to XCore `EURUSD`. Josh chose
+   not to model this table; providers are treated as quoting XCore symbols
+   directly.
 3. **Liquidity pools**: the set of providers for each XCore symbol.
 4. **Profiles**: markup, commission, etc.
-5. **Connectors** (PrimeXM: takers): the connection to a client system. One
-   connector per MT4 server.
-6. **Connector account** (child of connector): handles trading. Exactly one
-   per MT4 server.
+5. **Connectors** (PrimeXM: takers): the connection to a client system.
+6. **Connector account** (child of connector): handles trading.
 7. **Connector stream** (child of connector): handles pricing.
 8. Liquidity pool and liquidity profile are applied to the account and the
    stream, which customises pricing, trading, profit and markup.
 
-- **XCore symbol -> MT4 symbol** is one to many: XCore `EURUSD` maps to MT4
-  `EURUSD.retail` and `EURUSD.prime`.
+How this project models 5-8, as Josh set it up:
+
+- Connectors (`XCORE_CONNECTORS`, name and description): `trade/mt4` for the
+  MT4 server, plus one giveup connector per B2B coverage login:
+  `trade/uk_cov_100`, `trade/uk_cov_200`, `trade/nz_cov_300`,
+  `trade/nz_cov_400` (giveups to MT4 logins 100-400).
+- Connector accounts (`XCORE_CONNECTOR_ACCOUNTS`): a connector can have
+  several. `trade/mt4` has one per business: Retail, B2B, WL, Toxic, House,
+  each with the profile of the same name. Each giveup connector has one
+  account (`uk_cov_100` etc.) on the B2B profile. All accounts start on pool
+  Bank_FX.
+- Which MT4 trades go to which account: in reality a bridge between MT4 and
+  XCore does this mapping. Josh doesn't want to build one, so each connector
+  account carries match fields instead: `GROUP`, `LOGIN` and `LEAD_SOURCE`
+  (comma-separated lists, `*` = anything, `NULL` = nothing). A trade goes to
+  the account whose three fields all match its MT4 login. This lets MT4
+  client clusters be split across accounts.
+
+  | Account (trade/mt4) | Matches |
+  |---|---|
+  | Retail | groups RetailUSD/EUR/JPY/GBP |
+  | B2B | group B2B |
+  | WL | group White Label, lead source WL |
+  | Toxic | nothing for now (all NULL) |
+  | House | group House, logins 20 and 50 (the trading House logins) |
+
+  The giveup connectors' accounts match by login: `uk_cov_100` = login 100,
+  and so on. Checked against the accounts: every trading login matches
+  exactly one trade/mt4 account. Unmatched, as expected: House 10/30/40
+  (giveup targets), Coverage logins, Rebate logins. An account's pool can change over time, through
+  `fxgen/pools.py assign`, which logs it. Open: the Toxic account says
+  Bank_FX, but the Toxic profile's symbols all point to Toxic_FX; which one
+  wins is not settled yet.
+- No connector streams: Josh dropped them. A separate stream could show a
+  client BankA's price when the account can't actually trade BankA's
+  liquidity. That is predatory and probably not allowed after MiFID. Without
+  streams, pricing and trading come from the same pool.
+- No XCore -> MT4 symbol mapping table either (Josh dropped it). XCore
+  `EUR/USD` maps to MT4 `EURUSD`, `EURUSD.retail` and `EURUSD.b2b` by rule:
+  remove the slash for FX, use `CCY1` for CFDs.
+
+- Providers, as Josh defined them (`XCORE_PROVIDERS`, cut down to name, FIX
+  comp IDs and enable): 1 BankA, 2 BankAToxic, 3 BankB, 4 BankBToxic. Each
+  bank has a normal and a "Toxic" provider; what Toxic means is still to be
+  written down. The FIX comp IDs are invented: sender = the bridge's side,
+  target = the bank, one session per provider.
+- Liquidity pools, as Josh defined them: 1 Bank_FX (FX and metals from
+  providers 1,3 = BankA, BankB) and 2 Toxic_FX (FX and metals from providers
+  2,4 = the two Toxic providers). Both pools also carry the 4 CFDs, from
+  provider 1 = BankA only, so each profile takes every symbol from one pool.
+  (An earlier separate CFD pool, Bank_A_CFD, was dropped.)
+  `XCORE_LIQUIDITY_POOL_PROVIDERS.PROVIDER_ID` is a CSV of provider IDs per
+  pool and symbol. Josh doesn't remember whether XCore stored it that way,
+  but it's fine for this project.
+- Pool changes in the simulation: providers are never edited, but existing
+  providers are dropped from or added to the FX pools. Always through
+  `fxgen/pools.py`, so every change is logged. Josh will give the rules for a
+  random daily mode (which providers may join or leave which pool).
+- Profiles, as Josh defined them: 1 Retail, 2 B2B, 3 WL, 4 Toxic, 5 House.
+  Per profile and symbol (`XCORE_PROFILE_SYMBOLS`): the liquidity pool used
+  and the XCore markup. Retail, B2B, WL and House use Bank_FX for every
+  symbol; Toxic uses Toxic_FX. House has zero markup everywhere.
+  - A profile symbol is the symbol-level config of one profile. To change a
+    client's markup, either move the client (its connector account) to a
+    different profile, or change the details of its profile's symbols.
+  - A real company would usually have one profile per client company rather
+    than sharing one profile across many companies. Here B2B is shared by the
+    B2B account and the four giveup accounts.
+  - In the simulation, accounts never move between profiles: the markup is
+    steady. What does move is an account's pool, because a bank can flag a
+    client as toxic, and the account is then moved to the toxic pool
+    (`fxgen/pools.py assign`).
+  - Markup is in price units, added to the price: `MARKUP_BID` <= 0 (e.g.
+    -0.00002 on EUR/USD = 2 points off the bid), `MARKUP_ASK` >= 0. Josh's
+    rows are all symmetric (bid = -ask). The signs are enforced by CHECK
+    constraints.
+  - Both the pool and the markup can change over time. Changes go through
+    `fxgen/profiles.py`: `set` for a chosen change, `random` for the daily
+    churn. Random markup moves up or down by 1-2 points of the symbol and
+    stops at zero; it never flips a sign. House is never changed.
+  - Connector accounts carry a pool too, so the pool is set in two places.
+    See the open Toxic question under connector accounts.
+- **XCore symbol -> MT4 symbol** is one to many: XCore `EUR/USD` maps to MT4
+  `EURUSD`, `EURUSD.retail` and `EURUSD.b2b`.
+- XCore symbols (`XCORE_SYMBOLS`: `SYMBOL`, `TYPE`, `CCY1`, `CCY2`) come from
+  a reference table Josh built at work. It mapped every MT4 symbol to one
+  XCore symbol so that symbols aggregated correctly. PrimeXM's own symbol
+  schema isn't public. 19 symbols:
+  - FX pairs in slash form (`EUR/USD`). Metals count as FX here (`XAU/USD`,
+    `XAG/USD`), unlike MT4, where they're security group METAL.
+  - CFDs by market name: `WTI`, `Brent`, `Nasdaq`, `SP500`. For these, `CCY1`
+    holds the underlying (`USOIL`, `UKOIL`, `NAS100`, `SP500`), which is also
+    the MT4 symbol name.
+  - Josh confirmed both splits are true to the business: asset-class reports
+    group metals differently in MT4 and XCore, and mapping between the systems
+    needs the slash removed for FX and `CCY1` for CFDs.
 - Pools and profiles *can* vary by session, client and ad-hoc terms, and can
   change on the fly. At Equiti they did not change, but the simulation will
   change them so there is history to rebuild.
@@ -190,6 +284,21 @@ which is why the simulation keeps all three.
   the coverage login, the giveup markup and other settings.
 - Example row: connector `mt4_uk`, account (name), symbol `!XAUUSD, *`,
   provider `saxo`, book `a_only`, value `[login, giveup markup, ...]`.
+- Giveup rules in this project (`XCORE_GIVEUPS`), as Josh defined them.
+  Match fields are connector, account, symbol, MT4 group, login, lead source
+  and book; `TARGET` is the coverage login. All values are kept verbatim as
+  XCore holds them. Book values (`b_only`, `any`, `*`) are XCore-accurate
+  and must not be translated. `GIVEUP_ID` is the rule order.
+
+  | ID | Connector | Matches | Book | Target |
+  |---|---|---|---|---|
+  | 1 | trade/mt4 | everything | `b_only` | 10 NZ B Book Giveup |
+  | 2 | trade/mt4 | lead source `NZ_*` | `any` | 30 NZ All Client Giveup |
+  | 3 | trade/mt4 | lead source `UK_*, NZ_*` | `any` | 40 UK All Client Giveup |
+  | 4 | trade/mt4 | group White Label | `any` | 100000 White Label Coverage |
+  | 5-8 | each giveup connector | its own account | `*` | 100, 200, 300, 400 |
+
+  Login 40 is labelled UK but also takes NZ clients.
 - **Josh's mimic:** read the giveup table row by row, turn each field into a
   regular-expression `WHERE` clause, query the XCore order table, and append
   the coverage login. Done as a recursive query that reproduces XCore's rule
@@ -198,7 +307,18 @@ which is why the simulation keeps all three.
 ### Config history
 
 - At work Josh read the XCore logs directly. An XCore audit-log table is new to
-  him; the project simulates one (`CONFIG_AUDIT_LOG`).
+  him; the project simulates one (`XCORE_CONFIG_AUDIT_LOG`): auto-increment
+  `LOG_ID`, `LOG_TIME` (GMT, milliseconds) and a fixed-format `MESSAGE`, e.g.
+  `Liquidity pool 1 Bank_FX, symbol EUR/USD: removed provider 3 BankB.
+  Providers 1,3 -> 1.` One row per pool and symbol changed, written in the
+  same transaction as the change by `fxgen/pools.py` or `fxgen/profiles.py`
+  (e.g. `Profile 1 Retail, symbol EUR/USD: markup bid -0.00002 -> -0.00003,
+  ask +0.00002 -> +0.00003.`, `Profile 4 Toxic, symbol XAU/USD: pool 2
+  Toxic_FX -> 1 Bank_FX.`, `Connector trade/mt4, account 4 Toxic: pool 1
+  Bank_FX -> 2 Toxic_FX.`). Each message carries
+  the old and new value, so the setting before the first change can be
+  rebuilt too. `LOG_TIME` never goes backwards, so `LOG_ID` order is time
+  order.
 - Josh's method, and his resume item: capture config changes, then for any
   order, rebuild the exact settings at order time. With an audit log, treat
   it as a stack and "pop" back to the setting just before the order time,
