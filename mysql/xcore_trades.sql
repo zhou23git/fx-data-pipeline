@@ -21,7 +21,7 @@ CREATE TABLE XCORE_ORDER (
     AMOUNT       DECIMAL(20,6) NOT NULL,                  -- requested size, same as order MT4 AMOUNT
     PRICE        DECIMAL(18,6) NOT NULL,                  -- raw price + XCore markup bid/ask
     FILLSIZE     DECIMAL(20,6) NOT NULL DEFAULT 0,                -- executed size, passed back to order MT4
-    FILLPRICE    DECIMAL(18,6) NOT NULL DEFAULT 0,                -- executed price + XCore markup bid/ask
+    FILLPRICE    DECIMAL(24,12) NOT NULL DEFAULT 0,               -- executed price + XCore markup bid/ask; size-weighted average of legs, unrounded
     OPEN_MILLI   BIGINT        NOT NULL,                  -- request time, a few ms after order MT4 OPEN_MILLI
     CLOSE_MILLI  BIGINT        NOT NULL,                      -- complete time, after open and after every leg's close
     PRIMARY KEY (ORDER_ID),

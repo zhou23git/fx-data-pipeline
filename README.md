@@ -14,6 +14,8 @@ and dbt on realistic, messy sources.
 | `mysql/xcore_seed.sql`: providers, XCore symbols, liquidity pools, profiles | In progress |
 | `fxgen/accounts.py`: creates retail accounts in MySQL, run daily | Ready |
 | `fxgen/pools.py`: adds or drops providers in liquidity pools and sets connector accounts' pools, logging each change | Ready; random mode waits on rules |
+| `mysql/xcore_trades.sql`: XCore order, order MT4 and leg tables | Ready |
+| `fxgen/orders.py`: simulates MT4 -> XCore executions; `sample` writes 10 showcase trade sets | First version, under review |
 | `fxgen/profiles.py`: sets profile markup and pool per symbol, plus random daily markup, logging each change | Ready |
 | `fxgen/`: trade data generator | Work in progress, not runnable yet; will be adapted to read config from MySQL |
 | Snowflake and dbt | Not started |

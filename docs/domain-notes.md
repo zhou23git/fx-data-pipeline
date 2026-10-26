@@ -374,6 +374,26 @@ Fill rules (Josh):
   position. The simulation assumes bad config but keeps this rare. It shows
   up as order fill size > order MT4 fill size.
 
+Execution simulation, `fxgen/orders.py` (first version, for Josh to check).
+It starts from Josh's tradeable-login query over the bridge output. Choices
+made there, to confirm or correct:
+
+- The pool comes from the connector account (Josh's query joins on
+  `mt4.pool_id`); the profile symbol supplies markup and B-book.
+- The pool's provider CSV is the list of possible providers. Each provider
+  quotes 4 levels of 10 lots, each 1 point worse. An order sweeps the levels
+  best-first across providers; each leg hits one provider at one level, so
+  leg prices get worse as the sweep goes deeper.
+- A rejected leg is retried on the next level once its rejection comes back;
+  sweep legs go out a few ms apart.
+- B-book legs (Retail, WL) fill in full at the quote: no rejections, no
+  slippage, real LP still named.
+- A rejected opening order creates no MT4 ticket: `TICKET` 0, `SUBID2` NULL.
+- `python -m fxgen.orders sample --date ... --replace` writes one set per
+  scenario: normal, sweep, reject then retry, all rejected, partial fill,
+  hidden position, good slippage, B-booked metal, mini CFD, rejected close
+  then retried.
+
 Price flow. Each layer only knows its own markup: XCore knows nothing about
 MT4 group markups, and providers know nothing about XCore markups (not
 simulated, but the leg records it).
