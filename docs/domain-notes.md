@@ -178,7 +178,28 @@ How this project models 5-8, as Josh set it up:
   | House | group House, logins 20 and 50 (the trading House logins) |
 
   The giveup connectors' accounts match by login: `uk_cov_100` = login 100,
-  and so on. Checked against the accounts: every trading login matches
+  and so on.
+- Who trades through what:
+  - Retail, B2B, House and WL clients place trades in the MT4 client
+    terminal. Those trades reach XCore through the MT4 bridge on connector
+    `trade/mt4` (connector 1).
+  - The giveup connectors (`trade/uk_cov_100` etc.) are B2B clients whose
+    own trading platform sends FIX straight to XCore, without the broker's
+    MT4. The broker gives up (drop-copies) their trades to a coverage MT4
+    login (100-400) to keep an eye on them, because MT4 doubles as a hacked
+    back office.
+  - Coverage logins (100-400, 100000) never trade directly; they only
+    receive giveup copies.
+- The simulated bridge is Josh's stored procedure
+  `reference.connector_account_login()` (`mysql/stored procedure - connector
+  account login.sql`). It builds every MT4 login and symbol with group
+  settings, loops over the `trade/mt4` connector accounts only (connector 1)
+  with a cursor, turns each account's three patterns into regexes
+  (`reference.pattern_pos_re` / `pattern_neg_re`, the same rules as
+  giveups: `*`, `!`, comma lists) and writes the matches to
+  `reference.connector_account_logins`, one row per account, login and
+  symbol. Current run: 522 logins mapped, none twice; unmapped by design:
+  the 5 coverage logins. Checked against the accounts: every trading login matches
   exactly one trade/mt4 account. Unmatched, as expected: House 10/30/40
   (giveup targets), Coverage logins, Rebate logins. An account's pool can change over time, through
   `fxgen/pools.py assign`, which logs it. Open: the Toxic account says
