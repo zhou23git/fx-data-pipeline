@@ -289,6 +289,128 @@ How this project models 5-8, as Josh set it up:
   `b_book` result on `LEG` follows from it, and giveup rule 1 (book
   `b_only`) copies the B-booked trades to login 10.
 
+### Execution tables (Josh's notes, for the execution simulation)
+
+Built in `mysql/xcore_trades.sql` as `XCORE_ORDER_MT4`, `XCORE_ORDER` and
+`XCORE_LEG`. The table below keeps Josh's field descriptions; Josh will add
+more as the simulation is built and tested. "Contracts" means after
+converting from lots and applying the scaling multiplier (`TICK_VALUE` /
+`TICK_SIZE`). Times are epoch milliseconds.
+
+**XCore order MT4** (`XCORE_ORDER_MT4`)
+
+| Field | Meaning |
+|---|---|
+| ticket | MT4 ticket number |
+| close | 0 or 1 |
+| symbol | MT4 symbol |
+| side | buy/sell |
+| amount | requested contracts after converting from lot and applying the scaling multiplier |
+| price | requested price (raw price with markup bid/ask and group markup) |
+| fillsize | executed amount in contracts after converting from lot and applying the scaling multiplier |
+| fillprice | all-in executed price with all markups |
+| orderID | XCore order ID |
+| open_milli | epoch time x 1000: ticket request time; for MT4 trades, the earliest timestamp |
+| close_milli | epoch time x 1000: ticket fill time; for MT4 trades, the last timestamp |
+
+**XCore order** (`XCORE_ORDER`)
+
+| Field | Meaning |
+|---|---|
+| orderID | auto increment from 1 |
+| symbol | XCore symbol |
+| side | buy/sell |
+| subid1 | MT4 login or null |
+| subid2 | MT4 ticket or null |
+| amount | requested trade size (same as order MT4 amount) |
+| price | requested trade price: raw price with markup bid or ask. XCore doesn't know anything about group markups |
+| fillsize | executed size (passed back to order MT4) |
+| fillprice | executed price + markup bid/ask (again, doesn't know anything about group markups) |
+| open_milli | epoch time x 1000: order request time, a few milliseconds after order MT4 open_milli |
+| close_milli | epoch time x 1000: order complete time, later than order open and leg close |
+
+**XCore leg** (`XCORE_LEG`)
+
+| Field | Meaning |
+|---|---|
+| orderID | matches the parent orderID |
+| legID | starts at 0 for every new orderID; increments as more legs are used |
+| b_book | 0 or 1, based on config |
+| symbol | XCore symbol |
+| side | buy/sell |
+| amount | requested leg amount, smaller than the order trade size |
+| price | requested price (the LP's quoted price) |
+| fillsize | LP fill size |
+| fillprice1 | LP executed price, raw |
+| fillprice2 | LP executed price with XCore markups added |
+| lp | provider ID: whose price the leg executed on. Still a real LP even if B-booked |
+| markup_bid | XCore markup on the bid applied to this leg (from the profile symbol at the time) |
+| markup_ask | XCore markup on the ask applied to this leg |
+| open_milli | epoch time x 1000: leg request time, a few milliseconds after order open_milli |
+| close_milli | epoch time x 1000: leg complete time, the earliest of the closing timestamps |
+
+Timestamp order for one MT4 trade: order MT4 open < order open < leg open <
+leg close < order close <= order MT4 close.
+
+`close_milli` is never empty: a rejected order still gets the time of the
+rejection. A rejection shows as fill size and fill price 0 (on a leg, both
+fill prices), so the fill columns are never empty either.
+
+Fill rules (Josh):
+
+- When an order is done, the sum of its legs' fill sizes equals the order
+  fill size, which normally equals the order MT4 fill size (exception
+  below).
+- Never send more legs than needed to reach the requested size.
+- Rejections and failed trades happen. Fill size can be less than the
+  request, never more.
+- Price slippage happens: about 95% in the bad direction (buy fills higher,
+  sell fills lower than the leg's quoted price), about 5% in the good one.
+- Partial fills below the MT4 lot step: with correct config, XCore doesn't
+  allow partial fills that aren't a multiple of the MT4 lot step. With bad
+  config it does, and MT4 floors the fill to a size it can hold (the group's
+  `LOT_STEP`, in contracts). The remainder was filled at the provider but
+  isn't on any MT4 ticket, so the broker has unknowingly taken on a hidden
+  position. The simulation assumes bad config but keeps this rare. It shows
+  up as order fill size > order MT4 fill size.
+
+Price flow. Each layer only knows its own markup: XCore knows nothing about
+MT4 group markups, and providers know nothing about XCore markups (not
+simulated, but the leg records it).
+
+| Table | Request price | Fill price |
+|---|---|---|
+| Leg | `price` = the LP's quote | `fillprice1` = LP executed, raw (slippage lands here); `fillprice2` = `fillprice1` + XCore markup |
+| Order | raw price + XCore markup | executed price + XCore markup (from the legs' `fillprice2`) |
+| Order MT4 | raw price + XCore markup + MT4 group markup | all-in: order fill price + MT4 group markup |
+
+Buys use the ask and the ask markup; sells use the bid and the bid markup.
+
+MT4 group markup (`SPREAD_DIFF`, in points) is split across the life of a
+ticket: half on the opening fill and half on the closing fill. If it is odd,
+the open gets the extra point: open = ceil(`SPREAD_DIFF` / 2), close =
+floor(`SPREAD_DIFF` / 2). Each half goes against the client on that fill
+(added on a buy, subtracted on a sell), x `MT4_SYMBOLS.POINT`.
+
+| `SPREAD_DIFF` | Open | Close |
+|---|---|---|
+| 2 (Retail FX, WL metals) | 1 | 1 |
+| 10 (WL FX) | 5 | 5 |
+| 3 (example) | 2 | 1 |
+
+Price precision and rounding:
+
+| Table | Precision |
+|---|---|
+| Leg (`price`, `fillprice1`, `fillprice2`) | the symbol's `DIGITS` |
+| Order `fillprice` | size-weighted average of the legs' `fillprice2`, unrounded (can have any number of decimals) |
+| Order MT4 `fillprice` | back to `DIGITS`, rounded in the broker's favour: buys round up (ceiling), sells round down (floor) |
+
+E.g. on a 5-digit symbol, a buy averaging 1.000011 becomes 1.00002 in MT4,
+and a sell averaging 1.000099 becomes 1.00009. The gap between the order
+and the MT4 fill price is a small, always broker-favourable difference that
+shows up in reconciliation. Josh isn't sure this rounding was legal.
+
 ### Markup: lives in several places
 
 Client price = provider price + XCore markup + giveup markup (where used) +
