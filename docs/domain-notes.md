@@ -23,8 +23,22 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
 - Config (not in the standard export, modelled on Manager API records):
   security groups, symbols, groups, group-per-security settings
   (`SPREAD_DIFF`, commission, lot limits; details below), group margins.
-- Security groups as Josh defined them: 1 FX, 2 METAL, 3 CFD (USOIL, UKOIL,
-  NAS100, SP500).
+- Security groups as Josh defined them (`MT4_SECURITIES`), splitting FX by
+  symbol suffix so groups can be set per suffix:
+
+  | Index | Name | Description | Symbols (`MT4_SYMBOLS.TYPE`) |
+  |---|---|---|---|
+  | 1 | PLAIN | | 13 plain FX pairs (`EURUSD`) |
+  | 2 | .retail | RETAIL FX | 13 `.retail` pairs |
+  | 3 | .b2b | B2B FX | 13 `.b2b` pairs |
+  | 4 | METAL | XAUUSD, XAGUSD | 2 metals |
+  | 5 | CFD | USOIL, UKOIL, NAS100, SP500 | 4 CFDs |
+
+- Each client group gets exactly one FX security group, plus metals and
+  CFDs (`MT4_GROUP_SECURITIES`), so it can only trade its own FX suffix:
+  Retail groups and White Label trade `.retail`, B2B and Coverage trade
+  `.b2b`, House trades the plain symbols. Rebate has no rows at all, because
+  rebate logins don't trade.
 - Symbol price fields, as Josh used them:
   - `DIGITS`: decimal places in the price (5 for EURUSD, 3 for USDJPY).
   - `POINT`: the smallest price step, 1 / 10^`DIGITS` (0.00001 for EURUSD).
@@ -109,7 +123,9 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
     currency. So, per side: `COMM_BASE` x lots x `CONTRACT_SIZE` x
     `CONV_RATE1` / 100,000, in deposit currency, with no extra rate table.
   - `LOT_MIN` 0.01 and `LOT_MAX` 100, in lots: in config, 1 means 1 lot.
-    Min 0.01 lets FX clients trade 1,000 units at a time.
+    Min 0.01 lets FX clients trade 1,000 units at a time. CFDs (security
+    group 5) trade in whole lots, min and step 1, for every group except
+    House and Rebate.
   - Trades are different: `MT4_TRADES.VOLUME` is an integer in hundredths of
     a lot (0.01 lot = 1, 1 lot = 100). Josh's ELT gets units with
     `VOLUME` / 100 x `CONTRACT_SIZE`.
@@ -196,7 +212,8 @@ How this project models 5-8, as Josh set it up:
 - Profiles, as Josh defined them: 1 Retail, 2 B2B, 3 WL, 4 Toxic, 5 House.
   Per profile and symbol (`XCORE_PROFILE_SYMBOLS`): the liquidity pool used
   and the XCore markup. Retail, B2B, WL and House use Bank_FX for every
-  symbol; Toxic uses Toxic_FX. House has zero markup everywhere.
+  symbol; Toxic uses Toxic_FX. House has zero markup everywhere. Each
+  profile symbol also carries the B-book flag (see Trade tables).
   - A profile symbol is the symbol-level config of one profile. To change a
     client's markup, either move the client (its connector account) to a
     different profile, or change the details of its profile's symbols.
@@ -245,8 +262,11 @@ How this project models 5-8, as Josh set it up:
   as field `b_book`.
 - `DEAL`: the provider's response. Not needed for this project.
 - Josh's reporting join: `ORDER LEFT JOIN LEG LEFT JOIN DEAL`.
-- Where A/B-book was decided in config: Josh doesn't remember. Only the
-  `b_book` result on `LEG` matters. **(The routing rule table is assumed.)**
+- Where A/B-book is decided in config: Josh set it on the profile symbol,
+  `XCORE_PROFILE_SYMBOLS.B_BOOK` (1 = B-book, 0 = A-book). Retail and WL
+  are B-booked on every symbol; B2B, Toxic and House are A-booked. The
+  `b_book` result on `LEG` follows from it, and giveup rule 1 (book
+  `b_only`) copies the B-booked trades to login 10.
 
 ### Markup: lives in several places
 
@@ -286,17 +306,18 @@ which is why the simulation keeps all three.
   provider `saxo`, book `a_only`, value `[login, giveup markup, ...]`.
 - Giveup rules in this project (`XCORE_GIVEUPS`), as Josh defined them.
   Match fields are connector, account, symbol, MT4 group, login, lead source
-  and book; `TARGET` is the coverage login. All values are kept verbatim as
-  XCore holds them. Book values (`b_only`, `any`, `*`) are XCore-accurate
-  and must not be translated. `GIVEUP_ID` is the rule order.
+  and book; `TARGET` is the coverage login. `WITH_MARKUP` says whether the
+  copy is priced with the XCore markup (1) or without it (0). All values are
+  kept verbatim as XCore holds them. Book values (`b_only`, `any`, `*`) are
+  XCore-accurate and must not be translated. `GIVEUP_ID` is the rule order.
 
-  | ID | Connector | Matches | Book | Target |
-  |---|---|---|---|---|
-  | 1 | trade/mt4 | everything | `b_only` | 10 NZ B Book Giveup |
-  | 2 | trade/mt4 | lead source `NZ_*` | `any` | 30 NZ All Client Giveup |
-  | 3 | trade/mt4 | lead source `UK_*, NZ_*` | `any` | 40 UK All Client Giveup |
-  | 4 | trade/mt4 | group White Label | `any` | 100000 White Label Coverage |
-  | 5-8 | each giveup connector | its own account | `*` | 100, 200, 300, 400 |
+  | ID | Connector | Matches | Book | Target | With markup |
+  |---|---|---|---|---|---|
+  | 1 | trade/mt4 | everything | `b_only` | 10 NZ B Book Giveup | 0 |
+  | 2 | trade/mt4 | lead source `NZ_*` | `any` | 30 NZ All Client Giveup | 0 |
+  | 3 | trade/mt4 | lead source `UK_*, NZ_*` | `any` | 40 UK All Client Giveup | 0 |
+  | 4 | trade/mt4 | group White Label | `any` | 100000 White Label Coverage | 0 |
+  | 5-8 | each giveup connector | its own account | `*` | 100, 200, 300, 400 | 1 |
 
   Login 40 is labelled UK but also takes NZ clients.
 - **Josh's mimic:** read the giveup table row by row, turn each field into a

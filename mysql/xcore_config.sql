@@ -89,9 +89,11 @@ CREATE TABLE XCORE_PROFILE_SYMBOLS (
     POOL_ID       INT           NOT NULL,
     MARKUP_BID    DECIMAL(10,5) NOT NULL DEFAULT 0,  -- price added to the bid; <= 0, e.g. -0.00002
     MARKUP_ASK    DECIMAL(10,5) NOT NULL DEFAULT 0,  -- price added to the ask; >= 0, e.g. +0.00002
+    B_BOOK        TINYINT       NOT NULL DEFAULT 0,  -- 1 = B-book (internalised), 0 = A-book (sent to providers)
     PRIMARY KEY (PROFILE_ID, XCORE_SYMBOL),
     CHECK (MARKUP_BID <= 0),
     CHECK (MARKUP_ASK >= 0),
+    CHECK (B_BOOK IN (0, 1)),
     FOREIGN KEY (PROFILE_ID) REFERENCES XCORE_PROFILES (PROFILE_ID),
     FOREIGN KEY (XCORE_SYMBOL) REFERENCES XCORE_SYMBOLS (SYMBOL),
     FOREIGN KEY (POOL_ID) REFERENCES XCORE_LIQUIDITY_POOLS (POOL_ID)
@@ -149,7 +151,9 @@ CREATE TABLE XCORE_GIVEUPS (
     LEAD_SOURCE  VARCHAR(255) NOT NULL,            -- MT4 lead source pattern
     BOOK         VARCHAR(32)  NOT NULL,            -- b_only, any, *
     TARGET       INT          NOT NULL,            -- coverage login, MT4_USERS.LOGIN
-    PRIMARY KEY (GIVEUP_ID)
+    WITH_MARKUP  TINYINT      NOT NULL DEFAULT 0,  -- 1 = copy priced with the XCore markup, 0 = without
+    PRIMARY KEY (GIVEUP_ID),
+    CHECK (WITH_MARKUP IN (0, 1))
 );
 
 -- ---------------------------------------------------------------------------
