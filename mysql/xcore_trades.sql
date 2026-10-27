@@ -18,6 +18,7 @@ CREATE TABLE XCORE_ORDER (
     SIDE         VARCHAR(4)    NOT NULL,                  -- buy / sell
     SUBID1       INT           NULL,                      -- MT4 login, or NULL
     SUBID2       INT           NULL,                      -- MT4 ticket, or NULL
+    SUBID3       BIGINT        NULL,                      -- order MT4 CLORDID, or NULL
     AMOUNT       DECIMAL(20,6) NOT NULL,                  -- requested size, same as order MT4 AMOUNT
     PRICE        DECIMAL(18,6) NOT NULL,                  -- raw price + XCore markup bid/ask
     FILLSIZE     DECIMAL(20,6) NOT NULL DEFAULT 0,                -- executed size, passed back to order MT4
@@ -31,12 +32,18 @@ CREATE TABLE XCORE_ORDER (
 );
 
 -- ---------------------------------------------------------------------------
--- Order MT4: one-to-one MT4 extension of an order. One row per MT4 ticket
--- open (CLOSE = 0) or close (CLOSE = 1).
+-- Order MT4: one-to-one MT4 extension of an order. One row per MT4 request
+-- to open (CLOSE = 0) or close (CLOSE = 1) a ticket, rejected ones included,
+-- keyed by CLORDID, the working ticket number. CLORDID reaches XCore as
+-- XCORE_ORDER.SUBID3. ORDER_ID was added to the real table later; before it,
+-- the join to XCORE_ORDER matched login, symbol, connector and open times
+-- within a minute. Here the join is ORDER_ID only. ORDER_ID is NULL from the
+-- moment MT4 sends the request until XCore creates the order.
 -- ---------------------------------------------------------------------------
 CREATE TABLE XCORE_ORDER_MT4 (
-    ORDER_ID     BIGINT        NOT NULL,                  -- XCORE_ORDER.ORDER_ID
-    TICKET       INT           NOT NULL,                  -- MT4 ticket number
+    LOGIN        INT           NOT NULL,                  -- MT4 login
+    CLORDID      BIGINT        NOT NULL AUTO_INCREMENT,   -- working ticket number, from 1
+    TICKET       INT           NOT NULL,                  -- MT4 ticket number; 0 for a rejected open
     `CLOSE`      TINYINT       NOT NULL,                  -- 0 = opening, 1 = closing
     SYMBOL       VARCHAR(16)   NOT NULL,                  -- MT4 symbol
     SIDE         VARCHAR(4)    NOT NULL,                  -- buy / sell
@@ -44,10 +51,12 @@ CREATE TABLE XCORE_ORDER_MT4 (
     PRICE        DECIMAL(18,6) NOT NULL,                  -- raw price + XCore markup + MT4 group markup
     FILLSIZE     DECIMAL(20,6) NOT NULL DEFAULT 0,                -- executed contracts
     FILLPRICE    DECIMAL(18,6) NOT NULL DEFAULT 0,                -- all-in executed price with all markups
+    ORDER_ID     BIGINT        NULL,                      -- XCORE_ORDER.ORDER_ID
     OPEN_MILLI   BIGINT        NOT NULL,                  -- ticket request time: the earliest timestamp
     CLOSE_MILLI  BIGINT        NOT NULL,                      -- ticket fill time: the last timestamp
-    PRIMARY KEY (ORDER_ID),
-    INDEX (TICKET, `CLOSE`),
+    PRIMARY KEY (CLORDID),
+    INDEX (ORDER_ID),
+    INDEX (TICKET),
     CHECK (`CLOSE` IN (0, 1)),
     CHECK (SIDE IN ('buy', 'sell')),
     FOREIGN KEY (ORDER_ID) REFERENCES XCORE_ORDER (ORDER_ID)

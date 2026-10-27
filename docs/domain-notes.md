@@ -299,8 +299,23 @@ converting from lots and applying the scaling multiplier (`TICK_VALUE` /
 
 **XCore order MT4** (`XCORE_ORDER_MT4`)
 
+Primary key: clordid, the working ticket number. It auto-increments, giving
+one row per MT4 request to open or close a ticket, rejected attempts
+included. MT4 passes it to XCore as `ORDER.subid3`. Ticket and order ID are
+each indexed. Columns stay in Josh's order, with login and clordid added at
+the front.
+
+Order ID is NULL until XCore creates the order.
+
+ORDER_ID was added to the real table later. Before it existed, the join to
+`ORDER` matched login, symbol and connector, plus order open_milli within a
+minute of order MT4 open_milli. Josh won't recreate that: it's needlessly
+complicated. Here the join is ORDER_ID alone, and ORDER_ID is indexed for it.
+
 | Field | Meaning |
 |---|---|
+| login | MT4 login |
+| clordid | working ticket number; auto-increment primary key |
 | ticket | MT4 ticket number |
 | close | 0 or 1 |
 | symbol | MT4 symbol |
@@ -322,6 +337,7 @@ converting from lots and applying the scaling multiplier (`TICK_VALUE` /
 | side | buy/sell |
 | subid1 | MT4 login or null |
 | subid2 | MT4 ticket or null |
+| subid3 | order MT4 clordid or null: how MT4 passes clordid to XCore |
 | amount | requested trade size (same as order MT4 amount) |
 | price | requested trade price: raw price with markup bid or ask. XCore doesn't know anything about group markups |
 | fillsize | executed size (passed back to order MT4) |

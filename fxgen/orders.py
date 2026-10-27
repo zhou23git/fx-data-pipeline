@@ -194,17 +194,21 @@ def save(cur, row: dict, ex: Execution, ticket: int, is_close: bool) -> tuple[in
     order_close = ex.close_ms + 2
     mt4_close = order_close + 3
     t = ticket if (size or is_close) else 0
+    # MT4's request row comes first and gets the CLORDID; XCore receives it as
+    # SUBID3, and the request row is then linked to the new order.
     cur.execute(
-        "INSERT INTO xcore.XCORE_ORDER (SYMBOL, SIDE, SUBID1, SUBID2, AMOUNT, PRICE, FILLSIZE, FILLPRICE, OPEN_MILLI, CLOSE_MILLI) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (row["XCORE_SYMBOL"], ex.side, row["LOGIN"], t or None, ex.amount, ex.price, ex.fillsize, ex.fillprice,
-         ex.open_ms, order_close))
-    order_id = cur.lastrowid
-    cur.execute(
-        "INSERT INTO xcore.XCORE_ORDER_MT4 (ORDER_ID, TICKET, `CLOSE`, SYMBOL, SIDE, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
+        "INSERT INTO xcore.XCORE_ORDER_MT4 (LOGIN, TICKET, `CLOSE`, SYMBOL, SIDE, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
         "OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (order_id, t, int(is_close), row["SYMBOL"], ex.side, ex.amount, ex.mt4_price, size, price,
+        (row["LOGIN"], t, int(is_close), row["SYMBOL"], ex.side, ex.amount, ex.mt4_price, size, price,
          ex.mt4_open_ms, mt4_close))
+    clordid = cur.lastrowid
+    cur.execute(
+        "INSERT INTO xcore.XCORE_ORDER (SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
+        "OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (row["XCORE_SYMBOL"], ex.side, row["LOGIN"], t or None, clordid, ex.amount, ex.price, ex.fillsize,
+         ex.fillprice, ex.open_ms, order_close))
+    order_id = cur.lastrowid
+    cur.execute("UPDATE xcore.XCORE_ORDER_MT4 SET ORDER_ID = %s WHERE CLORDID = %s", (order_id, clordid))
     for leg in ex.legs:
         cur.execute(
             "INSERT INTO xcore.XCORE_LEG (ORDER_ID, LEG_ID, B_BOOK, SYMBOL, SIDE, AMOUNT, PRICE, FILLSIZE, FILLPRICE1, "
@@ -265,6 +269,7 @@ def main() -> None:
         for table in ("XCORE_LEG", "XCORE_ORDER_MT4", "XCORE_ORDER"):
             cur.execute(f"DELETE FROM xcore.{table}")
         cur.execute("ALTER TABLE xcore.XCORE_ORDER AUTO_INCREMENT = 1")
+        cur.execute("ALTER TABLE xcore.XCORE_ORDER_MT4 AUTO_INCREMENT = 1")
     for line in run_sample(cur, args.date, random.Random(args.seed)):
         print(line)
     conn.commit()
