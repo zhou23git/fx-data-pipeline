@@ -301,7 +301,7 @@ converting from lots and applying the scaling multiplier (`TICK_VALUE` /
 
 Primary key: clordid, the working ticket number. It auto-increments, giving
 one row per MT4 request to open or close a ticket, rejected attempts
-included. MT4 passes it to XCore as `ORDER.subid3`. Ticket and order ID are
+included. MT4 passes it to XCore as `ORDER.subid2`. Ticket and order ID are
 each indexed. Columns stay in Josh's order, with login and clordid added at
 the front.
 
@@ -335,9 +335,12 @@ complicated. Here the join is ORDER_ID alone, and ORDER_ID is indexed for it.
 | orderID | auto increment from 1 |
 | symbol | XCore symbol |
 | side | buy/sell |
+| connector | connector name, e.g. trade/mt4 |
+| account | connector account name |
 | subid1 | MT4 login or null |
-| subid2 | MT4 ticket or null |
-| subid3 | order MT4 clordid or null: how MT4 passes clordid to XCore |
+| subid2 | order MT4 clordid or null: how MT4 passes clordid to XCore |
+| subid3 | MT4 group or null |
+| subid4 | MT4 lead source or null |
 | amount | requested trade size (same as order MT4 amount) |
 | price | requested trade price: raw price with markup bid or ask. XCore doesn't know anything about group markups |
 | fillsize | executed size (passed back to order MT4) |
@@ -404,7 +407,8 @@ made there, to confirm or correct:
   sweep legs go out a few ms apart.
 - B-book legs (Retail, WL) fill in full at the quote: no rejections, no
   slippage, real LP still named.
-- A rejected opening order creates no MT4 ticket: `TICKET` 0, `SUBID2` NULL.
+- A rejected opening order creates no MT4 ticket: order MT4 `TICKET` is 0.
+  It still has a CLORDID, so `SUBID2` is set.
 - `python -m fxgen.orders sample --date ... --replace` writes one set per
   scenario: normal, sweep, reject then retry, all rejected, partial fill,
   hidden position, good slippage, B-booked metal, mini CFD, rejected close

@@ -16,9 +16,12 @@ CREATE TABLE XCORE_ORDER (
     ORDER_ID     BIGINT        NOT NULL AUTO_INCREMENT,   -- from 1
     SYMBOL       VARCHAR(12)   NOT NULL,                  -- XCore symbol
     SIDE         VARCHAR(4)    NOT NULL,                  -- buy / sell
+    CONNECTOR    VARCHAR(32)   NOT NULL,                  -- connector name, e.g. trade/mt4
+    ACCOUNT      VARCHAR(32)   NOT NULL,                  -- connector account name
     SUBID1       INT           NULL,                      -- MT4 login, or NULL
-    SUBID2       INT           NULL,                      -- MT4 ticket, or NULL
-    SUBID3       BIGINT        NULL,                      -- order MT4 CLORDID, or NULL
+    SUBID2       BIGINT        NULL,                      -- order MT4 CLORDID, or NULL
+    SUBID3       VARCHAR(16)   NULL,                      -- MT4 group, or NULL
+    SUBID4       VARCHAR(32)   NULL,                      -- MT4 lead source, or NULL
     AMOUNT       DECIMAL(20,6) NOT NULL,                  -- requested size, same as order MT4 AMOUNT
     PRICE        DECIMAL(18,6) NOT NULL,                  -- raw price + XCore markup bid/ask
     FILLSIZE     DECIMAL(20,6) NOT NULL DEFAULT 0,                -- executed size, passed back to order MT4
@@ -35,7 +38,7 @@ CREATE TABLE XCORE_ORDER (
 -- Order MT4: one-to-one MT4 extension of an order. One row per MT4 request
 -- to open (CLOSE = 0) or close (CLOSE = 1) a ticket, rejected ones included,
 -- keyed by CLORDID, the working ticket number. CLORDID reaches XCore as
--- XCORE_ORDER.SUBID3. ORDER_ID was added to the real table later; before it,
+-- XCORE_ORDER.SUBID2. ORDER_ID was added to the real table later; before it,
 -- the join to XCORE_ORDER matched login, symbol, connector and open times
 -- within a minute. Here the join is ORDER_ID only. ORDER_ID is NULL from the
 -- moment MT4 sends the request until XCore creates the order.

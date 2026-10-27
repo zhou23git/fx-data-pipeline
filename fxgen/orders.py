@@ -195,7 +195,7 @@ def save(cur, row: dict, ex: Execution, ticket: int, is_close: bool) -> tuple[in
     mt4_close = order_close + 3
     t = ticket if (size or is_close) else 0
     # MT4's request row comes first and gets the CLORDID; XCore receives it as
-    # SUBID3, and the request row is then linked to the new order.
+    # SUBID2, and the request row is then linked to the new order.
     cur.execute(
         "INSERT INTO xcore.XCORE_ORDER_MT4 (LOGIN, TICKET, `CLOSE`, SYMBOL, SIDE, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
         "OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -203,10 +203,10 @@ def save(cur, row: dict, ex: Execution, ticket: int, is_close: bool) -> tuple[in
          ex.mt4_open_ms, mt4_close))
     clordid = cur.lastrowid
     cur.execute(
-        "INSERT INTO xcore.XCORE_ORDER (SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
-        "OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (row["XCORE_SYMBOL"], ex.side, row["LOGIN"], t or None, clordid, ex.amount, ex.price, ex.fillsize,
-         ex.fillprice, ex.open_ms, order_close))
+        "INSERT INTO xcore.XCORE_ORDER (SYMBOL, SIDE, CONNECTOR, ACCOUNT, SUBID1, SUBID2, SUBID3, SUBID4, AMOUNT, PRICE, "
+        "FILLSIZE, FILLPRICE, OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (row["XCORE_SYMBOL"], ex.side, row["CONNECTOR"], row["CONNECTOR_ACCOUNT"], row["LOGIN"], clordid,
+         row["GROUP"], row["LEAD_SOURCE"], ex.amount, ex.price, ex.fillsize, ex.fillprice, ex.open_ms, order_close))
     order_id = cur.lastrowid
     cur.execute("UPDATE xcore.XCORE_ORDER_MT4 SET ORDER_ID = %s WHERE CLORDID = %s", (order_id, clordid))
     for leg in ex.legs:
