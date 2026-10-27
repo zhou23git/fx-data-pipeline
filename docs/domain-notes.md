@@ -507,6 +507,20 @@ which is why the simulation keeps all three.
   regular-expression `WHERE` clause, query the XCore order table, and append
   the coverage login. Done as a recursive query that reproduces XCore's rule
   ordering. This rebuilds the coverage trades with full detail.
+- Built as `reporting.giveup()` (`mysql/stored procedure - giveup.sql`).
+  - A cursor reads the rules in `GIVEUP_ID` order, turns each one into regex
+    conditions and appends its matches to `reporting.giveup_trades`.
+  - Josh's outputs: `GIVEUP_LOGIN` is the rule's `TARGET`. `GIVEUP_PRICE` is
+    leg `FILLPRICE1` when `WITH_MARKUP` = 0, and `FILLPRICE2` when it is 1.
+  - The rows it matches come from Josh's order / leg / order MT4 reporting
+    query, with the matched fields added.
+  - Every matching rule makes a copy, so an NZ B-book retail trade goes to 10,
+    30 and 40.
+  - Choices made, not confirmed by Josh:
+    - Grain is one row per filled leg; rejected legs are not copied.
+    - `b_only` needs leg `B_BOOK` = 1, `a_only` needs 0, and `any` or `*`
+      matches both.
+    - A missing subid counts as '' so that `*` still matches it.
 
 ### Config history
 
