@@ -37,13 +37,15 @@ on mt4.profile_id = prof.profile_id
 and sym.XCORE_SYMBOL = prof.XCORE_SYMBOL
 """
 
-# Josh's API client profile query, plus the symbol details and the lot limits
-# API trades reuse: the Coverage group's, where the giveup logins live.
+# Josh's API client profile query (mysql/reference - API accounts.sql), plus
+# what the simulation borrows from MT4: lot size conversion and the lot limits
+# of the Coverage group, where the giveup logins live.
 API_SQL = """
 select conn.name as CONNECTOR, acct.name as CONNECTOR_ACCOUNT,
-       pool.PROVIDER_ID, pool.XCORE_SYMBOL,
+       pool.PROVIDER_ID, pool.xcore_symbol as XCORE_SYMBOL,
        prof.MARKUP_BID, prof.MARKUP_ASK, prof.B_BOOK,
-       sym.MT4_SYMBOL, sym.DIGITS, sym.POINT, sym.CONTRACTS_PER_LOT, sym.SCALING_MULTIPLIER,
+       sym.DIGITS,
+       mt4sym.CONTRACTS_PER_LOT, mt4sym.SCALING_MULTIPLIER,
        gs.LOT_MIN, gs.LOT_MAX, gs.LOT_STEP
 from xcore.xcore_connectors conn
 left join xcore.xcore_connector_accounts acct
@@ -53,10 +55,12 @@ on acct.POOL_ID = pool.POOL_ID
 left join xcore.xcore_profile_symbols prof
 on acct.PROFILE_ID = prof.PROFILE_ID
 and pool.xcore_symbol = prof.XCORE_SYMBOL
-join reference.mt4_symbol_reference sym
-on sym.XCORE_SYMBOL = pool.XCORE_SYMBOL
+left join REFERENCE.XCORE_SYMBOL_REFERENCE sym
+on pool.XCORE_SYMBOL = sym.XCORE_SYMBOL
+join reference.mt4_symbol_reference mt4sym
+on mt4sym.XCORE_SYMBOL = pool.XCORE_SYMBOL
 join mt4.mt4_symbols ms
-on ms.SYMBOL = sym.MT4_SYMBOL
+on ms.SYMBOL = mt4sym.MT4_SYMBOL
 join mt4.mt4_group_securities gs
 on gs.SERVER = 'trade/mt4' and gs.`GROUP` = 'Coverage' and gs.SEC_INDEX = ms.TYPE
 where conn.NAME <> 'trade/mt4'
