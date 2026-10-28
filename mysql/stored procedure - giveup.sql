@@ -3,7 +3,7 @@
 -- exist only in MT4, without the detail reporting needs. This rebuilds them
 -- with full detail: each XCORE_GIVEUPS rule, in GIVEUP_ID order, has its
 -- patterns (XCore style: * wildcard, ! negation, comma lists) turned into
--- regexes and matched against the order / leg / order MT4 rows. Every
+-- regexes and matched against the order / leg rows. Every
 -- matching rule produces a copy, so one execution can go to several targets.
 --
 -- Needs reference.pattern_pos_re and reference.pattern_neg_re
@@ -38,7 +38,6 @@ CREATE TABLE reporting.giveup_trades (
     LegFillSize          DECIMAL(20,6)  NOT NULL,
     FILLPRICE1           DECIMAL(18,6)  NOT NULL,
     FILLPRICE2           DECIMAL(18,6)  NOT NULL,
-    DonePrice            DECIMAL(18,6)  NULL,       -- order MT4 FILLPRICE
     GIVEUP_ID            INT            NOT NULL,   -- rule that matched
     GIVEUP_LOGIN         INT            NOT NULL,   -- XCORE_GIVEUPS.TARGET: coverage login the copy goes to
     WITH_MARKUP          TINYINT        NOT NULL,
@@ -70,9 +69,8 @@ BEGIN
         ORDER BY GIVEUP_ID;
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
 
-    -- Order / leg / order MT4 rows: Josh's reporting query (reporting - order
-    -- leg mt4.sql) plus the fields giveups match on. Only filled legs: a
-    -- rejected leg is never copied. Missing values become '' so that * still
+    -- Order / leg rows with the fields giveups match on (order MT4 isn't
+    -- needed). Only filled legs: a rejected leg is never copied. Missing values become '' so that * still
     -- matches them (orders from FIX connectors have no MT4 subids).
     DROP TEMPORARY TABLE IF EXISTS reporting.order_leg_mt4;
 
@@ -81,7 +79,6 @@ BEGIN
                ord.SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                ord.FILLPRICE as OrderFillPrice,
                leg.LEG_ID, b_book, LP, Markup_Bid, Markup_Ask, leg.fillsize as LegFillSize, fillprice1, fillprice2,
-               mt4.FILLPRICE as DonePrice,
                COALESCE(CAST(SUBID1 AS CHAR), '') AS match_login,
                COALESCE(SUBID3, '') AS match_group,
                COALESCE(SUBID4, '') AS match_lead_source
@@ -90,8 +87,6 @@ BEGIN
         on ord.symbol = sym.xcore_symbol
         left join xcore.xcore_leg leg
         on ord.order_id = leg.order_id
-        left join xcore.xcore_order_mt4 mt4
-        on ord.ORDER_ID = mt4.ORDER_ID
         where leg.fillsize > 0;
 
     TRUNCATE TABLE reporting.giveup_trades;
@@ -116,10 +111,9 @@ BEGIN
         INSERT INTO reporting.giveup_trades
               (ORDER_ID, CONNECTOR, ACCOUNT, SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                OrderFillPrice, LEG_ID, B_BOOK, LP, MARKUP_BID, MARKUP_ASK, LegFillSize, FILLPRICE1, FILLPRICE2,
-               DonePrice, GIVEUP_ID, GIVEUP_LOGIN, WITH_MARKUP, GIVEUP_PRICE)
+               GIVEUP_ID, GIVEUP_LOGIN, WITH_MARKUP, GIVEUP_PRICE)
         SELECT t.ORDER_ID, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
                t.OrderFillPrice, t.LEG_ID, t.b_book, t.LP, t.Markup_Bid, t.Markup_Ask, t.LegFillSize, t.fillprice1, t.fillprice2,
-               t.DonePrice,
                g_id AS GIVEUP_ID,
                g_target AS GIVEUP_LOGIN,
                g_markup AS WITH_MARKUP,
