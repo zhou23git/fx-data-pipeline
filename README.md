@@ -10,6 +10,7 @@ and dbt on realistic, messy sources.
 |---|---|
 | `mysql/mt4_config.sql`: MT4 config and account tables for the local `mt4` schema | Ready |
 | `mysql/mt4_seed.sql`: MT4 config rows and one-off accounts | In progress |
+| `mysql/mt4_trades.sql`: MT4 trades table (tickets, plus balance and credit rows) | Table ready; not filled yet |
 | `mysql/xcore_config.sql`: XCore config tables and config audit log for the `xcore` schema | Ready |
 | `mysql/xcore_seed.sql`: providers, XCore symbols, liquidity pools, profiles | In progress |
 | `fxgen/accounts.py`: creates retail accounts in MySQL, run daily | Ready |

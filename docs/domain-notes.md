@@ -624,6 +624,52 @@ which is why the simulation keeps all three.
     special rule for the risk account. Josh deals with the resulting gap in
     reporting.
 
+### MT4 trades (Josh, 2026-10-27)
+
+`mt4.MT4_TRADES` (`mysql/mt4_trades.sql`) is the MT4 MySQL export table
+`MT4_TRADES`, the Manager API's `TradeRecord`, cut down to Josh's fields.
+
+- **Cash rows:** MT4 keeps deposits and withdrawals in the trade table, as
+  `CMD` 6 balance and 7 credit.
+- **CMD codes:** 0 buy, 1 sell, 2 buy limit, 3 sell limit, 4 buy stop,
+  5 sell stop, 6 balance, 7 credit.
+- **Left out:** SL, TP, expiration, taxes, internal ID, margin rate, magic,
+  timestamp, reason, the gateway (GW_) fields and modify time.
+- **Number types:** prices, rates and money are DOUBLE, as in the real
+  export.
+
+| Field | Meaning |
+|---|---|
+| SERVER | trade/mt4, consistent with the other MT4 tables |
+| TICKET | links to order MT4 `TICKET` |
+| LOGIN | links to `MT4_USERS` |
+| SYMBOL | MT4 symbol, e.g. EURUSD.b2b |
+| DIGITS | price rounding |
+| CMD | 0 buy, 1 sell; also 6 balance and 7 credit for cash rows |
+| VOLUME | whole number, 100 = 1 lot |
+| OPEN_TIME | from the opening order MT4 row, format YYYY-MM-DD hh:mm:ss |
+| OPEN_PRICE | locked in on open |
+| CLOSE_TIME | from the closing row; 1970-01-01 00:00:00 while open |
+| CLOSE_PRICE | updates until closed |
+| CONV_RATE1, CONV_RATE2 | profit currency to deposit currency, at open and at close (see "Commission" above) |
+| COMMISSION | charged at open, both ways |
+| COMMISSION_AGENT | the rebate logins (`AGENT_ACCOUNT`) earn this |
+| SWAPS | see below |
+| PROFIT | see below |
+| COMMENT | "a whole can of worms" that Josh will explain soon |
+
+**Swaps.**
+- The swap plugin sets a swap price delta, which is used to calculate a
+  dollar amount.
+- Each day the swap amount = the previous day's swap amount + the new day's
+  calculation.
+- The swap total locks in when the trade closes.
+
+**Profit.**
+- Profit changes with the close price, which floats with the market until
+  the trade is truly closed.
+- Once the trade is closed, profit is locked in.
+
 ### Config history
 
 - At work Josh read the XCore logs directly. An XCore audit-log table is new to
