@@ -100,11 +100,18 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
     entered an integer `COMM_BASE`. The effect was a fixed USD amount per
     100,000 USD of notional. At 10: 1 lot EURUSD about $11, 1 lot USDCAD $10,
     1 lot CADJPY about $8.50, depending on the base currency's USD rate.
-  - Commission is charged **at open only**, for both sides: when the trade
-    opens, MT4 writes 2x the per-side commission into the `COMMISSION` field
-    of the trade's `MT4_TRADES` row. There is no separate commission record.
-  - Partial close pro-rates commission between the tickets. Partial close is
-    complicated; it will be worked out later.
+  - Commission is a field on the trade's `MT4_TRADES` row; there is no
+    separate commission record.
+  - Josh first remembered commission as charged **at open only**, for both
+    sides (2x the per-side amount). On 2026-10-27 he said he doesn't
+    actually remember how commission and agent commission were handled. The
+    open-only rule also conflicts with close by hedge.
+  - So the simulation charges the **open side at open and the close side at
+    close**. `COMMISSION` and `COMMISSION_AGENT` are updated at closing time
+    to capture both sides. This makes adding up commission for close-by-hedge
+    pairs come out right.
+  - Partial close pro-rates commission between the tickets. See "MT4 trade
+    behaviour: direct clients" below.
   - Conversion: `MT4_TRADES.CONV_RATE1` is the rate from the symbol's base
     currency to the deposit currency. Josh derives the quote-to-deposit rate
     from it and the symbol price. (At work he also used an end-of-day query
@@ -114,10 +121,12 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
     check this. The PrimeXM bridge may have overridden it, so the simulation
     keeps his definition: `CONV_RATE1` = base to deposit.
   - Two rates, both needed: `CONV_RATE1` at open and `CONV_RATE2` at close.
-    Commission uses only `CONV_RATE1`, since it is charged at open.
+    Under the open-then-close rule, the open side of commission uses
+    `CONV_RATE1`. The close side is assumed to use `CONV_RATE2`; Josh hasn't
+    confirmed this.
   - Worked example, `COMM_BASE` 10, 1 lot EURUSD at about 1.10, USD account:
-    notional 100,000 EUR = 110,000 USD, so $11 per side, and `COMMISSION` is
-    -22.00 at open.
+    notional 100,000 EUR = 110,000 USD, so $11 per side. `COMMISSION` is
+    -11.00 at open and about -22.00 after close.
   - Because commission is linear in notional, `COMM_BASE` USD per 100,000 USD
     is the same as `COMM_BASE` deposit currency per 100,000 of deposit
     currency. So, per side: `COMM_BASE` x lots x `CONTRACT_SIZE` x
@@ -651,8 +660,8 @@ which is why the simulation keeps all three.
 | OPEN_PRICE | locked in on open |
 | CLOSE_TIME | from the closing row; 1970-01-01 00:00:00 while open |
 | CLOSE_PRICE | updates until closed |
-| CONV_RATE1, CONV_RATE2 | profit currency to deposit currency, at open and at close (see "Commission" above) |
-| COMMISSION | charged at open, both ways |
+| CONV_RATE1, CONV_RATE2 | base currency to deposit currency (Josh's definition), at open and at close (see "Commission" above) |
+| COMMISSION | open side at open; close side added at close |
 | COMMISSION_AGENT | the rebate logins (`AGENT_ACCOUNT`) earn this |
 | SWAPS | see below |
 | PROFIT | see below |
@@ -669,6 +678,78 @@ which is why the simulation keeps all three.
 - Profit changes with the close price, which floats with the market until
   the trade is truly closed.
 - Once the trade is closed, profit is locked in.
+
+**Money is in deposit currency.**
+- P/L is always in the account's deposit currency, never the quote currency.
+  The same goes for commission, agent commission and swaps.
+- Amounts are rounded to the deposit currency. The simulation assumes 0
+  decimals for JPY and 2 for USD, GBP and EUR.
+
+### MT4 trade behaviour: direct clients (Josh, 2026-10-27, first pass)
+
+Josh is explaining this over several iterations. It is the spec for the
+program that will fill `MT4_TRADES`.
+
+**What a direct client (trading on MT4) can do.**
+- **Open trades.** The client can leave a comment, but it is usually blank.
+  MT4 system comments override any client or plugin comment.
+- **Close** any trade they currently have open.
+- **Leave trades open.** A client can hold a buy EURUSD and a sell EURUSD at
+  the same time. They can't cash out until they close, but the system allows
+  it.
+- **Close by hedge.** With open trades in the same symbol on opposite sides,
+  the client can select a list of them and close them against each other.
+
+**Close by hedge.**
+1. Make two lists, one of buys and one of sells, each sorted oldest first.
+   Josh doesn't know MT4's real order, but oldest first does no harm.
+2. Take the top of each list.
+   - **Main trade (ticket 1):** always the older of the two, whatever its
+     size. It stays as the closed trade.
+   - **Closing trade (ticket 2):** the newer one, set to volume 0.
+   - This way ticket 1 never closes before it opened.
+3. If the volumes differ, the bigger ticket is first **partially closed**.
+   The bigger one may be either ticket 1 or ticket 2. It is split into two
+   tickets:
+   - The original ticket ID is reduced to the smaller ticket's volume.
+   - A **child ticket** is opened for the remaining volume:
+     - Open time, and presumably symbol, side and open price, are the
+       parent's.
+     - Close time is 1970-01-01 00:00:00.
+     - Comment is `from: [ticket 1]`. It always points to the ticket that
+       keeps volume, which is ticket 1, whichever ticket was the parent. It
+       says the child came from closing that ticket with non-zero
+       attributes.
+   - The parent's commission, agent commission and swaps are split by
+     volume:
+     - The reduced ticket's share is rounded to the deposit currency.
+     - The child gets the original amount minus that rounded share, so the
+       two always add back to the original.
+   - Partial close works the same way however it is caused: by close by
+     hedge or by another method.
+4. Ticket 1 (now the same size as ticket 2):
+   - Close time = ticket 2's open time.
+   - Close price = ticket 2's open price.
+   - Add ticket 2's commission, agent commission and swaps to ticket 1.
+   - Calculate profit and lock it in, using `CONV_RATE2` at that close time.
+   - The comment says nothing, even if ticket 1 was reduced by a partial
+     close.
+5. Ticket 2:
+   - Volume = 0.
+   - Commission, agent commission and swaps = 0, now that they have moved to
+     ticket 1.
+   - Close price = its open price, so profit is 0.
+   - Close time = when the close by hedge was requested.
+   - Comment = `close by hedge: [ticket 1]`.
+6. Keep pairing down the lists until one runs out. The lists can change as
+   it goes: a remainder ticket from step 3 takes the parent's place.
+   Partial closes will be covered later.
+
+**XCore doesn't know about close by hedge.** Nothing is sent to XCore, so
+MT4 and XCore volumes diverge. That's why Josh had to brute-force trade
+matching once the volumes on the two systems differed.
+
+### Config history
 
 ### Config history
 

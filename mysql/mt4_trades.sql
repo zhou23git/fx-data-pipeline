@@ -22,9 +22,9 @@ CREATE TABLE MT4_TRADES (
     OPEN_PRICE        DOUBLE       NOT NULL DEFAULT 0,      -- locked in on open
     CLOSE_TIME        DATETIME     NOT NULL DEFAULT '1970-01-01 00:00:00',  -- from the closing row; 1970-01-01 while open
     CLOSE_PRICE       DOUBLE       NOT NULL DEFAULT 0,      -- floats with the market until closed
-    CONV_RATE1        DOUBLE       NOT NULL DEFAULT 0,      -- profit currency -> deposit currency at open
-    CONV_RATE2        DOUBLE       NOT NULL DEFAULT 0,      -- profit currency -> deposit currency at close
-    COMMISSION        DOUBLE       NOT NULL DEFAULT 0,      -- charged at open, both ways
+    CONV_RATE1        DOUBLE       NOT NULL DEFAULT 0,      -- base currency -> deposit currency at open (Josh's definition)
+    CONV_RATE2        DOUBLE       NOT NULL DEFAULT 0,      -- base currency -> deposit currency at close
+    COMMISSION        DOUBLE       NOT NULL DEFAULT 0,      -- open side at open; close side added at close
     COMMISSION_AGENT  DOUBLE       NOT NULL DEFAULT 0,      -- earned by the rebate login (MT4_USERS.AGENT_ACCOUNT)
     SWAPS             DOUBLE       NOT NULL DEFAULT 0,      -- running total, one day added each rollover; locked at close
     PROFIT            DOUBLE       NOT NULL DEFAULT 0,      -- floats with CLOSE_PRICE until closed, then locked
