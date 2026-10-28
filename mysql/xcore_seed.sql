@@ -173,12 +173,12 @@ INSERT INTO xcore.XCORE_PROFILE_SYMBOLS (PROFILE_ID, XCORE_SYMBOL, POOL_ID, MARK
   (5, 'SP500',   1,        0,       0, 0);
 
 -- Giveup rules, values verbatim as XCore holds them.
-INSERT INTO xcore.XCORE_GIVEUPS (GIVEUP_ID, CONNECTOR, ACCOUNT, SYMBOL, `GROUP`, LOGIN, LEAD_SOURCE, BOOK, TARGET, WITH_MARKUP) VALUES
-  (1, 'trade/mt4',        '*',          '*', '*',           '*', '*',          'b_only', 10,     0),
-  (2, 'trade/mt4',        '*',          '*', '*',           '*', 'NZ_*',       'any',    30,     0),
-  (3, 'trade/mt4',        '*',          '*', '*',           '*', 'UK_*, NZ_*', 'any',    40,     0),
-  (4, 'trade/mt4',        '*',          '*', 'White Label', '*', '*',          'any',    100000, 0),
-  (5, 'trade/uk_cov_100', 'uk_cov_100', '*', '*',           '*', '*',          '*',      100,    1),
-  (6, 'trade/uk_cov_200', 'uk_cov_200', '*', '*',           '*', '*',          '*',      200,    1),
-  (7, 'trade/nz_cov_300', 'nz_cov_300', '*', '*',           '*', '*',          '*',      300,    1),
-  (8, 'trade/nz_cov_400', 'nz_cov_400', '*', '*',           '*', '*',          '*',      400,    1);
+INSERT INTO xcore.XCORE_GIVEUPS (GIVEUP_ID, CONNECTOR, ACCOUNT, SYMBOL, `GROUP`, LOGIN, LEAD_SOURCE, BOOK, TARGET, REVERSE, WITH_MARKUP) VALUES
+  (1, 'trade/mt4',        '*',          '*', '*',           '*', '*',          'b_only', 10,     1, 0),
+  (2, 'trade/mt4',        '*',          '*', '*',           '*', 'NZ_*',       'any',    30,     0, 0),
+  (3, 'trade/mt4',        '*',          '*', '*',           '*', 'UK_*, NZ_*', 'any',    40,     0, 0),
+  (4, 'trade/mt4',        '*',          '*', 'White Label', '*', '*',          'any',    100000, 0, 0),
+  (5, 'trade/uk_cov_100', 'uk_cov_100', '*', '*',           '*', '*',          'any',    100,    0, 1),
+  (6, 'trade/uk_cov_200', 'uk_cov_200', '*', '*',           '*', '*',          'any',    200,    0, 1),
+  (7, 'trade/nz_cov_300', 'nz_cov_300', '*', '*',           '*', '*',          'any',    300,    0, 1),
+  (8, 'trade/nz_cov_400', 'nz_cov_400', '*', '*',           '*', '*',          'any',    400,    0, 1);

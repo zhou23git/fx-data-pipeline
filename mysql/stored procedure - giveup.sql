@@ -40,8 +40,10 @@ CREATE TABLE reporting.giveup_trades (
     FILLPRICE2           DECIMAL(18,6)  NOT NULL,
     GIVEUP_ID            INT            NOT NULL,   -- rule that matched
     GIVEUP_LOGIN         INT            NOT NULL,   -- XCORE_GIVEUPS.TARGET: coverage login the copy goes to
+    REVERSE              TINYINT        NOT NULL,
+    GIVEUP_SIDE          VARCHAR(4)     NOT NULL,   -- the copy's side: SIDE flipped when REVERSE = 1
     WITH_MARKUP          TINYINT        NOT NULL,
-    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- OrderFillPrice when WITH_MARKUP = 1, leg FILLPRICE1 when 0; rounded in the broker's favour
+    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- OrderFillPrice when WITH_MARKUP = 1, leg FILLPRICE1 when 0; rounded by GIVEUP_SIDE
     PRIMARY KEY (GIVEUP_ID, ORDER_ID, LEG_ID),
     INDEX (GIVEUP_LOGIN)
 );
@@ -57,14 +59,14 @@ CREATE PROCEDURE reporting.giveup()
 BEGIN
     DECLARE done INT DEFAULT FALSE;
     DECLARE g_id, g_target INT;
-    DECLARE g_markup TINYINT;
+    DECLARE g_reverse, g_markup TINYINT;
     DECLARE g_conn, g_acct, g_sym, g_grp, g_login, g_ls VARCHAR(255);
     DECLARE g_book VARCHAR(32);
     DECLARE book_flag TINYINT;    -- leg B_BOOK the rule needs; NULL = any
     DECLARE conn_pos, conn_neg, acct_pos, acct_neg, sym_pos, sym_neg,
             grp_pos, grp_neg, login_pos, login_neg, ls_pos, ls_neg VARCHAR(1024);
     DECLARE rules CURSOR FOR
-        SELECT GIVEUP_ID, CONNECTOR, ACCOUNT, SYMBOL, `GROUP`, LOGIN, LEAD_SOURCE, BOOK, TARGET, WITH_MARKUP
+        SELECT GIVEUP_ID, CONNECTOR, ACCOUNT, SYMBOL, `GROUP`, LOGIN, LEAD_SOURCE, BOOK, TARGET, REVERSE, WITH_MARKUP
         FROM xcore.xcore_giveups
         ORDER BY GIVEUP_ID;
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
@@ -93,7 +95,7 @@ BEGIN
 
     OPEN rules;
     read_loop: LOOP
-        FETCH rules INTO g_id, g_conn, g_acct, g_sym, g_grp, g_login, g_ls, g_book, g_target, g_markup;
+        FETCH rules INTO g_id, g_conn, g_acct, g_sym, g_grp, g_login, g_ls, g_book, g_target, g_reverse, g_markup;
         IF done THEN
             LEAVE read_loop;
         END IF;
@@ -111,20 +113,25 @@ BEGIN
         INSERT INTO reporting.giveup_trades
               (ORDER_ID, CONNECTOR, ACCOUNT, SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                OrderFillPrice, LEG_ID, B_BOOK, LP, MARKUP_BID, MARKUP_ASK, LegFillSize, FILLPRICE1, FILLPRICE2,
-               GIVEUP_ID, GIVEUP_LOGIN, WITH_MARKUP, GIVEUP_PRICE)
+               GIVEUP_ID, GIVEUP_LOGIN, REVERSE, GIVEUP_SIDE, WITH_MARKUP, GIVEUP_PRICE)
         SELECT t.ORDER_ID, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
                t.OrderFillPrice, t.LEG_ID, t.b_book, t.LP, t.Markup_Bid, t.Markup_Ask, t.LegFillSize, t.fillprice1, t.fillprice2,
                g_id AS GIVEUP_ID,
                g_target AS GIVEUP_LOGIN,
+               g_reverse AS REVERSE,
+               t.giveup_side AS GIVEUP_SIDE,
                g_markup AS WITH_MARKUP,
-               -- Rounded to the symbol's digits in the broker's favour, as MT4
-               -- does: buys up (ceiling), sells down (floor). Prices are
-               -- positive, so TRUNCATE is the floor.
-               IF(t.SIDE = 'buy',
+               -- Rounded to the symbol's digits by the copy's own side, as MT4
+               -- does for any login: buys up (ceiling), sells down (floor). No
+               -- special rule for reversed copies to the risk account. Prices
+               -- are positive, so TRUNCATE is the floor.
+               IF(t.giveup_side = 'buy',
                   TRUNCATE(t.raw_price, t.digits)
                       + IF(t.raw_price > TRUNCATE(t.raw_price, t.digits), CAST(POW(10, -t.digits) AS DECIMAL(10,6)), 0),
                   TRUNCATE(t.raw_price, t.digits)) AS GIVEUP_PRICE
-        FROM (SELECT o.*, IF(g_markup = 1, o.OrderFillPrice, o.fillprice1) AS raw_price
+        FROM (SELECT o.*,
+                     IF(g_markup = 1, o.OrderFillPrice, o.fillprice1) AS raw_price,
+                     IF(g_reverse = 1, IF(o.SIDE = 'buy', 'sell', 'buy'), o.SIDE) AS giveup_side
               FROM reporting.order_leg_mt4 o) t
         WHERE (book_flag IS NULL OR t.b_book = book_flag)
           AND t.CONNECTOR         REGEXP conn_pos  AND (conn_neg  IS NULL OR t.CONNECTOR         NOT REGEXP conn_neg)

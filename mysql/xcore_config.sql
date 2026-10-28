@@ -151,8 +151,10 @@ CREATE TABLE XCORE_GIVEUPS (
     LEAD_SOURCE  VARCHAR(255) NOT NULL,            -- MT4 lead source pattern
     BOOK         VARCHAR(32)  NOT NULL,            -- b_only, any, *
     TARGET       INT          NOT NULL,            -- coverage login, MT4_USERS.LOGIN
+    REVERSE      TINYINT      NOT NULL DEFAULT 0,  -- 1 = copy with the side flipped (e.g. to the risk account), 0 = same side
     WITH_MARKUP  TINYINT      NOT NULL DEFAULT 0,  -- 1 = copy priced with the XCore markup, 0 = without
     PRIMARY KEY (GIVEUP_ID),
+    CHECK (REVERSE IN (0, 1)),
     CHECK (WITH_MARKUP IN (0, 1))
 );
 

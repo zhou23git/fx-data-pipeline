@@ -281,7 +281,8 @@ How this project models 5-8, as Josh set it up:
   (login, group, ticket, MT4 fields).
 - `LEG`: the message XCore sent to a provider. The A/B-book flag lives here,
   as field `b_book`.
-- `DEAL`: the provider's response. Not needed for this project.
+- `DEAL`: the provider's execution. Not simulated for now; see "Deals and
+  rounding gaps" below.
 - Josh's reporting join: `ORDER LEFT JOIN LEG LEFT JOIN DEAL`.
 - Where A/B-book is decided in config: Josh set it on the profile symbol,
   `XCORE_PROFILE_SYMBOLS.B_BOOK` (1 = B-book, 0 = A-book). Retail and WL
@@ -493,18 +494,19 @@ which is why the simulation keeps all three.
   provider `saxo`, book `a_only`, value `[login, giveup markup, ...]`.
 - Giveup rules in this project (`XCORE_GIVEUPS`), as Josh defined them.
   Match fields are connector, account, symbol, MT4 group, login, lead source
-  and book; `TARGET` is the coverage login. `WITH_MARKUP` says whether the
-  copy is priced with the XCore markup (1) or without it (0). All values are
-  kept verbatim as XCore holds them. Book values (`b_only`, `any`, `*`) are
-  XCore-accurate and must not be translated. `GIVEUP_ID` is the rule order.
+  and book; `TARGET` is the coverage login. `REVERSE` = 1 flips the copy's
+  side. `WITH_MARKUP` says whether the copy is priced with the XCore markup
+  (1) or without it (0). All values are kept verbatim as XCore holds them.
+  Book values (`b_only`, `any`, `*`) are XCore-accurate and must not be
+  translated. `GIVEUP_ID` is the rule order.
 
-  | ID | Connector | Matches | Book | Target | With markup |
-  |---|---|---|---|---|---|
-  | 1 | trade/mt4 | everything | `b_only` | 10 NZ B Book Giveup | 0 |
-  | 2 | trade/mt4 | lead source `NZ_*` | `any` | 30 NZ All Client Giveup | 0 |
-  | 3 | trade/mt4 | lead source `UK_*, NZ_*` | `any` | 40 UK All Client Giveup | 0 |
-  | 4 | trade/mt4 | group White Label | `any` | 100000 White Label Coverage | 0 |
-  | 5-8 | each giveup connector | its own account | `*` | 100, 200, 300, 400 | 1 |
+  | ID | Connector | Matches | Book | Target | Reverse | With markup |
+  |---|---|---|---|---|---|---|
+  | 1 | trade/mt4 | everything | `b_only` | 10 NZ B Book Giveup | 1 | 0 |
+  | 2 | trade/mt4 | lead source `NZ_*` | `any` | 30 NZ All Client Giveup | 0 | 0 |
+  | 3 | trade/mt4 | lead source `UK_*, NZ_*` | `any` | 40 UK All Client Giveup | 0 | 0 |
+  | 4 | trade/mt4 | group White Label | `any` | 100000 White Label Coverage | 0 | 0 |
+  | 5-8 | each giveup connector | its own account | `any` | 100, 200, 300, 400 | 0 | 1 |
 
   Login 40 is labelled UK but also takes NZ clients.
 - **Josh's mimic:** read the giveup table row by row, turn each field into a
@@ -572,6 +574,55 @@ which is why the simulation keeps all three.
 - **Volume:** the API clients are B2B, usually brokers themselves, and they
   trade a lot. API (B2B) volume should be 40-50% of total daily volume; the
   rest comes from the MT4 direct accounts.
+
+### Deals and rounding gaps (Josh, 2026-10-27)
+
+**Deals.** The XCore flow is order > leg > deal:
+
+| Table | Is | Key |
+|---|---|---|
+| Order | the client's request | order ID |
+| Leg | the request to an LP | order ID, leg ID |
+| Deal | the LP's execution | order ID, leg ID, deal ID |
+
+- An LP can split a leg into many deals, just as XCore splits an order into
+  legs.
+- Deal ID counts up within each leg.
+- The true primary key of the trade flow is order ID, leg ID and deal ID.
+- So leg `fillprice1` and `fillprice2` can be volume-weighted averages of the
+  deals, with more digits than the symbol has. They then face the same XCore
+  to MT4 rounding as the order fill price.
+- Not simulated for now: every simulated leg fills as one deal at a price on
+  the symbol's digits.
+
+**Rounding gaps.**
+- Rounding "in the broker's favour" really means against the client, because
+  the clients are on MT4.
+- For a regulated STP broker, rounding that left a trade with negative
+  revenue could be a problem.
+- Rounding becomes a discrepancy once the broker also uses MT4 as its
+  internal book of truth:
+  - **LP reconciliation:** say a giveup sends every A-book trade against
+    LP 1 to account X. Comparing X with LP 1's statement shows a difference
+    from the rounding.
+  - **Reverse giveups:** these are more of a problem. The house risk account
+    usually gets a reverse giveup: the client buys, so the risk account
+    sells. A volume-weighted price already has more digits than the symbol.
+    On top of that, the copy's side is flipped, so the rounding goes the
+    wrong way. The risk account isn't a client, so rounding against it is
+    rounding against the broker.
+    - Example: the GBP/USD sweep averages 1.2702933.
+    - A client buy rounds up to 1.27030.
+    - The risk account's reverse sell rounds down to 1.27029.
+    - So the client's trade and the risk account's copy don't net to zero.
+- **Reverse giveups** are configured by `XCORE_GIVEUPS.REVERSE`: 1 flips
+  the copy's side, 0 keeps it.
+  - Rule 1 (B-book to login 10, the NZ B-book risk account) is the reverse
+    one.
+  - `reporting.giveup()` writes the copy's side as `GIVEUP_SIDE`.
+  - It rounds `GIVEUP_PRICE` by that side, like any MT4 login, with no
+    special rule for the risk account. Josh deals with the resulting gap in
+    reporting.
 
 ### Config history
 
