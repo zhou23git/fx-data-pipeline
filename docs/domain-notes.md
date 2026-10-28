@@ -765,6 +765,13 @@ matching once the volumes on the two systems differed.
 - **Recon break.**
   - Ticket 1's close time is when the process completes, so MT4 shows a
     close that XCore never received.
+  - Josh's reporting fix:
+    - Find the zero-volume tickets with a `close by hedge:` comment.
+    - Extract ticket 1's number from the comment.
+    - Chase down ticket 1 and replace its close time with ticket 2's open
+      time.
+    - This is only for fixing the close time. Following tickets back to
+      XCore orders doesn't work.
 
 **Comments are not an audit trail.** The hedge comment overwrites whatever
 was there, including a closing child's `from: [ticket]`. So following
