@@ -20,10 +20,6 @@ CREATE DATABASE IF NOT EXISTS reporting;
 DROP TABLE IF EXISTS reporting.giveup_trades;
 
 CREATE TABLE reporting.giveup_trades (
-    GIVEUP_ID            INT            NOT NULL,   -- rule that matched
-    GIVEUP_LOGIN         INT            NOT NULL,   -- XCORE_GIVEUPS.TARGET: coverage login the copy goes to
-    WITH_MARKUP          TINYINT        NOT NULL,
-    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- leg FILLPRICE2 when WITH_MARKUP = 1, FILLPRICE1 when 0
     ORDER_ID             BIGINT         NOT NULL,
     CONNECTOR            VARCHAR(32)    NOT NULL,
     ACCOUNT              VARCHAR(32)    NOT NULL,
@@ -33,23 +29,20 @@ CREATE TABLE reporting.giveup_trades (
     SUBID2               BIGINT         NULL,       -- CLORDID
     SUBID3               VARCHAR(16)    NULL,       -- group
     SUBID4               VARCHAR(32)    NULL,       -- lead source
-    OrderRequestAmount   DECIMAL(20,6)  NOT NULL,
-    OrderRequestPrice    DECIMAL(18,6)  NOT NULL,
     OrderFillPrice       DECIMAL(24,12) NOT NULL,
     LEG_ID               INT            NOT NULL,
     B_BOOK               TINYINT        NOT NULL,
     LP                   INT            NOT NULL,
-    LegRequestAmount     DECIMAL(20,6)  NOT NULL,
-    LegRequestPrice      DECIMAL(18,6)  NOT NULL,
     MARKUP_BID           DECIMAL(10,5)  NOT NULL,
     MARKUP_ASK           DECIMAL(10,5)  NOT NULL,
     LegFillSize          DECIMAL(20,6)  NOT NULL,
     FILLPRICE1           DECIMAL(18,6)  NOT NULL,
     FILLPRICE2           DECIMAL(18,6)  NOT NULL,
-    TICKET               INT            NULL,       -- MT4 ticket of the client trade
-    `CLOSE`              TINYINT        NULL,
-    MT4RequestPrice      DECIMAL(18,6)  NULL,
-    DonePrice            DECIMAL(18,6)  NULL,
+    DonePrice            DECIMAL(18,6)  NULL,       -- order MT4 FILLPRICE
+    GIVEUP_ID            INT            NOT NULL,   -- rule that matched
+    GIVEUP_LOGIN         INT            NOT NULL,   -- XCORE_GIVEUPS.TARGET: coverage login the copy goes to
+    WITH_MARKUP          TINYINT        NOT NULL,
+    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- leg FILLPRICE2 when WITH_MARKUP = 1, FILLPRICE1 when 0
     PRIMARY KEY (GIVEUP_ID, ORDER_ID, LEG_ID),
     INDEX (GIVEUP_LOGIN)
 );
@@ -85,10 +78,9 @@ BEGIN
 
     CREATE TEMPORARY TABLE reporting.order_leg_mt4
         SELECT ord.ORDER_ID, ord.CONNECTOR, ord.ACCOUNT, ord.SYMBOL, ord.SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
-               ord.AMOUNT as OrderRequestAmount, ord.PRICE as OrderRequestPrice, ord.FILLPRICE as OrderFillPrice,
-               leg.LEG_ID, b_book, LP, leg.AMOUNT as LegRequestAmount, leg.price as LegRequestPrice, Markup_Bid, Markup_Ask,
-               leg.fillsize as LegFillSize, fillprice1, fillprice2,
-               mt4.TICKET, mt4.`CLOSE`, mt4.PRICE as MT4RequestPrice, mt4.FILLPRICE as DonePrice,
+               ord.FILLPRICE as OrderFillPrice,
+               leg.LEG_ID, b_book, LP, Markup_Bid, Markup_Ask, leg.fillsize as LegFillSize, fillprice1, fillprice2,
+               mt4.FILLPRICE as DonePrice,
                COALESCE(CAST(SUBID1 AS CHAR), '') AS match_login,
                COALESCE(SUBID3, '') AS match_group,
                COALESCE(SUBID4, '') AS match_lead_source
@@ -119,12 +111,16 @@ BEGIN
 
         -- Static SQL: the rule's values are plain variables, nothing is spliced in.
         INSERT INTO reporting.giveup_trades
-        SELECT g_id, g_target, g_markup, IF(g_markup = 1, t.fillprice2, t.fillprice1),
-               t.ORDER_ID, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
-               t.OrderRequestAmount, t.OrderRequestPrice, t.OrderFillPrice,
-               t.LEG_ID, t.b_book, t.LP, t.LegRequestAmount, t.LegRequestPrice, t.Markup_Bid, t.Markup_Ask,
-               t.LegFillSize, t.fillprice1, t.fillprice2,
-               t.TICKET, t.`CLOSE`, t.MT4RequestPrice, t.DonePrice
+              (ORDER_ID, CONNECTOR, ACCOUNT, SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
+               OrderFillPrice, LEG_ID, B_BOOK, LP, MARKUP_BID, MARKUP_ASK, LegFillSize, FILLPRICE1, FILLPRICE2,
+               DonePrice, GIVEUP_ID, GIVEUP_LOGIN, WITH_MARKUP, GIVEUP_PRICE)
+        SELECT t.ORDER_ID, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
+               t.OrderFillPrice, t.LEG_ID, t.b_book, t.LP, t.Markup_Bid, t.Markup_Ask, t.LegFillSize, t.fillprice1, t.fillprice2,
+               t.DonePrice,
+               g_id AS GIVEUP_ID,
+               g_target AS GIVEUP_LOGIN,
+               g_markup AS WITH_MARKUP,
+               IF(g_markup = 1, t.fillprice2, t.fillprice1) AS GIVEUP_PRICE
         FROM reporting.order_leg_mt4 t
         WHERE (book_flag IS NULL OR t.b_book = book_flag)
           AND t.CONNECTOR         REGEXP conn_pos  AND (conn_neg  IS NULL OR t.CONNECTOR         NOT REGEXP conn_neg)
