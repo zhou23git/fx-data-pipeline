@@ -660,7 +660,7 @@ which is why the simulation keeps all three.
 | OPEN_PRICE | locked in on open |
 | CLOSE_TIME | from the closing row; 1970-01-01 00:00:00 while open |
 | CLOSE_PRICE | updates until closed |
-| CONV_RATE1, CONV_RATE2 | base currency to deposit currency (Josh's definition), at open and at close (see "Commission" above) |
+| CONV_RATE1, CONV_RATE2 | base currency to deposit currency (Josh's definition), at open and at close (see "Commission" above). CONV_RATE2 is 0 while the trade is open |
 | COMMISSION | open side at open; close side added at close |
 | COMMISSION_AGENT | the rebate logins (`AGENT_ACCOUNT`) earn this |
 | SWAPS | see below |
@@ -728,10 +728,13 @@ program that will fill `MT4_TRADES`.
    - Partial close works the same way however it is caused: by close by
      hedge or by another method.
 4. Ticket 1 (now the same size as ticket 2):
-   - Close time = ticket 2's open time.
+   - Close time = when the close-by-hedge process completes, not ticket 2's
+     open time.
    - Close price = ticket 2's open price.
    - Add ticket 2's commission, agent commission and swaps to ticket 1.
-   - Calculate profit and lock it in, using `CONV_RATE2` at that close time.
+   - `CONV_RATE2` = the conversion rate when the process completes. It is
+     not taken from ticket 2's `CONV_RATE1`.
+   - Calculate profit with that `CONV_RATE2` and lock it in.
    - Close by hedge doesn't touch ticket 1's comment, even if ticket 1 was
      reduced by a partial close. A child that becomes ticket 1 keeps its
      `from: [ticket]` comment.
@@ -740,7 +743,8 @@ program that will fill `MT4_TRADES`.
    - Commission, agent commission and swaps = 0, now that they have moved to
      ticket 1.
    - Close price = its open price, so profit is 0.
-   - Close time = when the close by hedge was requested.
+   - Close time = when the close-by-hedge process completes, the same as
+     ticket 1.
    - Comment = `close by hedge: [ticket 1]`.
 6. Keep pairing down the lists until one runs out. The lists can change as
    it goes: a remainder ticket from step 3 takes the parent's place.
@@ -749,6 +753,18 @@ program that will fill `MT4_TRADES`.
 **XCore doesn't know about close by hedge.** Nothing is sent to XCore, so
 MT4 and XCore volumes diverge. That's why Josh had to brute-force trade
 matching once the volumes on the two systems differed.
+
+**Hidden risks Josh found tracing close-by-hedge breaks.**
+- **Conversion rate mismatch.**
+  - When a client hedges their own trades with two open tickets, or several
+    clients offset each other, the broker's own exposure closes at once.
+  - The client tickets keep floating until the process completes, and their
+    profit is converted at that later `CONV_RATE2`.
+  - Ticket 2's `CONV_RATE1` isn't reused. So profit locked in the deposit
+    currency doesn't match the quote-currency P/L at the hedge prices.
+- **Recon break.**
+  - Ticket 1's close time is when the process completes, so MT4 shows a
+    close that XCore never received.
 
 **Comments are not an audit trail.** The hedge comment overwrites whatever
 was there, including a closing child's `from: [ticket]`. So following

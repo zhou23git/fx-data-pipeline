@@ -5,8 +5,8 @@
 
 open sends the trade through the bridge simulation (order MT4, XCore order
 and legs, as fxgen.orders does) and, if it fills, writes the MT4 ticket.
-While a ticket is open, CLOSE_PRICE, CONV_RATE2 and PROFIT show the price it
-would close at now. hedge closes open tickets against each other. Rules are in docs/domain-notes.md, "MT4 trades" and "MT4
+While a ticket is open, CLOSE_PRICE and PROFIT show the price it would close
+at now; CONV_RATE2 stays 0 until it closes. hedge closes open tickets against each other. Rules are in docs/domain-notes.md, "MT4 trades" and "MT4
 trade behaviour: direct clients".
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetim
         "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "
         "VALUES ('trade/mt4', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, %s, '')",
         (ticket, login, symbol, row["DIGITS"], 0 if side == "buy" else 1, volume, open_time, open_price,
-         OPEN_DATE, close_price, conv1, conv2, commission, pl))
+         OPEN_DATE, close_price, conv1, 0, commission, pl))
     return (f"ticket {ticket}: {login} {side} {volume / 100:g} lots {symbol} at {open_price}, opened {open_time}, "
             f"commission {commission}, floating P/L {pl}")
 
@@ -146,20 +146,21 @@ def partial_close(cur, t: dict, keep: int, from_ticket: int) -> dict:
     t["VOLUME"] = keep
     side = "buy" if t["CMD"] == 0 else "sell"
     child_pl = profit(side, contracts(child, rest), child["OPEN_PRICE"], child["CLOSE_PRICE"],
-                      child["CONV_RATE2"], child["DEPOSIT"])
+                      rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], child["CLOSE_PRICE"]), child["DEPOSIT"])
     cur.execute(
         "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
         "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "
         "VALUES ('trade/mt4', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (child_ticket, t["LOGIN"], t["SYMBOL"], t["DIGITS"], t["CMD"], rest, t["OPEN_TIME"], child["OPEN_PRICE"],
-         OPEN_DATE, child["CLOSE_PRICE"], child["CONV_RATE1"], child["CONV_RATE2"], child["COMMISSION"],
+         OPEN_DATE, child["CLOSE_PRICE"], child["CONV_RATE1"], 0, child["COMMISSION"],
          child["COMMISSION_AGENT"], child["SWAPS"], child_pl, f"from: {from_ticket}"))
     return child
 
 
-def close_by_hedge(cur, tickets: list[int], when: datetime) -> list[str]:
+def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) -> list[str]:
     """Close the selected open tickets against each other (domain notes,
-    "Close by hedge"). Nothing is sent to XCore."""
+    "Close by hedge"). Nothing is sent to XCore. Close time and CONV_RATE2
+    are set when the process completes (`when`), not from ticket 2."""
     ts = [load_ticket(cur, n) for n in tickets]
     if len({(t["LOGIN"], t["SYMBOL"]) for t in ts}) != 1:
         raise SystemExit("close by hedge needs tickets of one login and one symbol")
@@ -168,6 +169,10 @@ def close_by_hedge(cur, tickets: list[int], when: datetime) -> list[str]:
     order = lambda t: (t["OPEN_TIME"], t["TICKET"])
     buys = sorted((t for t in ts if t["CMD"] == 0), key=order)
     sells = sorted((t for t in ts if t["CMD"] == 1), key=order)
+    point = Decimal(1).scaleb(-int(ts[0]["DIGITS"]))
+    market = (Decimal(MIDS[ts[0]["XCORE_SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
+    conv2 = rate(ts[0]["BASE"], ts[0]["DEPOSIT"], ts[0]["QUOTE"], market)
+    done = when.strftime("%Y-%m-%d %H:%M:%S")
     log = []
     while buys and sells:
         main, other = sorted((buys[0], sells[0]), key=order)
@@ -181,16 +186,15 @@ def close_by_hedge(cur, tickets: list[int], when: datetime) -> list[str]:
             bigger_list.insert(0, child)
             log.append(f"ticket {bigger['TICKET']} partially closed: {child['VOLUME'] / 100:g} lots to child "
                        f"{child['TICKET']}")
-        # ticket 1 closes at ticket 2's open and takes over its costs
+        # ticket 1 closes at ticket 2's open price and takes over its costs
         side = "buy" if main["CMD"] == 0 else "sell"
         close_price = other["OPEN_PRICE"]
-        conv2 = rate(main["BASE"], main["DEPOSIT"], main["QUOTE"], close_price)
         pl = profit(side, contracts(main, main["VOLUME"]), main["OPEN_PRICE"], close_price, conv2, main["DEPOSIT"])
         cur.execute(
             "UPDATE mt4.MT4_TRADES SET VOLUME = %s, CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, "
             "COMMISSION = %s, COMMISSION_AGENT = %s, SWAPS = %s, PROFIT = %s "
             "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
-            (main["VOLUME"], other["OPEN_TIME"], close_price, conv2, main["COMMISSION"] + other["COMMISSION"],
+            (main["VOLUME"], done, close_price, conv2, main["COMMISSION"] + other["COMMISSION"],
              main["COMMISSION_AGENT"] + other["COMMISSION_AGENT"], main["SWAPS"] + other["SWAPS"], pl,
              main["TICKET"]))
         # ticket 2 is emptied
@@ -198,9 +202,7 @@ def close_by_hedge(cur, tickets: list[int], when: datetime) -> list[str]:
             "UPDATE mt4.MT4_TRADES SET VOLUME = 0, CLOSE_TIME = %s, CLOSE_PRICE = OPEN_PRICE, CONV_RATE2 = %s, "
             "COMMISSION = 0, COMMISSION_AGENT = 0, SWAPS = 0, PROFIT = 0, COMMENT = %s "
             "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
-            (when.strftime("%Y-%m-%d %H:%M:%S"), rate(other["BASE"], other["DEPOSIT"], other["QUOTE"],
-                                                       other["OPEN_PRICE"]),
-             f"close by hedge: {main['TICKET']}", other["TICKET"]))
+            (done, conv2, f"close by hedge: {main['TICKET']}", other["TICKET"]))
         log.append(f"ticket {main['TICKET']} closed by {other['TICKET']} at {close_price}: "
                    f"{main['VOLUME'] / 100:g} lots, P/L {pl}")
     return log
@@ -218,7 +220,8 @@ def main() -> None:
     p.add_argument("--seed", type=int)
     h = sub.add_parser("hedge", help="close open tickets against each other (close by hedge)")
     h.add_argument("--tickets", type=int, nargs="+", required=True)
-    h.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT request time")
+    h.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT time the process completes")
+    h.add_argument("--seed", type=int)
     args = parser.parse_args()
 
     conn = connect()
@@ -226,7 +229,7 @@ def main() -> None:
     if args.action == "open":
         print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, random.Random(args.seed)))
     else:
-        print("\n".join(close_by_hedge(cur, args.tickets, args.time)))
+        print("\n".join(close_by_hedge(cur, args.tickets, args.time, random.Random(args.seed))))
     conn.commit()
     conn.close()
 
