@@ -1,11 +1,12 @@
 """Direct MT4 clients' trades in mt4.MT4_TRADES.
 
   python -m fxgen.mt4trades open --login 1000 --symbol EURUSD.retail --side buy --lots 1 --time "2026-10-27 09:00:00"
+  python -m fxgen.mt4trades hedge --tickets 1000010 1000013 --time "2026-10-27 16:00:00"
 
 open sends the trade through the bridge simulation (order MT4, XCore order
 and legs, as fxgen.orders does) and, if it fills, writes the MT4 ticket.
 While a ticket is open, CLOSE_PRICE, CONV_RATE2 and PROFIT show the price it
-would close at now. Rules are in docs/domain-notes.md, "MT4 trades" and "MT4
+would close at now. hedge closes open tickets against each other. Rules are in docs/domain-notes.md, "MT4 trades" and "MT4
 trade behaviour: direct clients".
 """
 from __future__ import annotations
@@ -101,6 +102,110 @@ def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetim
             f"commission {commission}, floating P/L {pl}")
 
 
+TICKET_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD, t.VOLUME, t.OPEN_TIME, t.OPEN_PRICE, t.CLOSE_TIME, "
+              "t.CLOSE_PRICE, t.CONV_RATE1, t.CONV_RATE2, t.COMMISSION, t.COMMISSION_AGENT, t.SWAPS, t.DIGITS, "
+              "u.CURRENCY AS DEPOSIT, s.CURRENCY AS BASE, s.CONTRACT_SIZE, r.XCORE_SYMBOL "
+              "FROM mt4.MT4_TRADES t "
+              "JOIN mt4.MT4_USERS u ON u.SERVER = t.SERVER AND u.LOGIN = t.LOGIN "
+              "JOIN mt4.MT4_SYMBOLS s ON s.SERVER = t.SERVER AND s.SYMBOL = t.SYMBOL "
+              "JOIN reference.mt4_symbol_reference r ON r.MT4_SYMBOL = t.SYMBOL "
+              "WHERE t.SERVER = 'trade/mt4' AND t.TICKET = %s")
+
+
+def load_ticket(cur, ticket: int) -> dict:
+    cur.execute(TICKET_SQL, (ticket,))
+    cols = [c[0] for c in cur.description]
+    rows = cur.fetchall()
+    if not rows:
+        raise SystemExit(f"no ticket {ticket}")
+    t = dict(zip(cols, rows[0]))
+    for k in ("OPEN_PRICE", "CLOSE_PRICE", "CONV_RATE1", "CONV_RATE2", "COMMISSION", "COMMISSION_AGENT", "SWAPS"):
+        t[k] = dec(t[k])
+    t["QUOTE"] = t["XCORE_SYMBOL"].split("/")[1] if "/" in t["XCORE_SYMBOL"] else "USD"
+    return t
+
+
+def contracts(t: dict, volume: int) -> Decimal:
+    return Decimal(volume) / 100 * dec(t["CONTRACT_SIZE"])
+
+
+def partial_close(cur, t: dict, keep: int, from_ticket: int) -> dict:
+    """Split ticket t: it keeps `keep` volume and a child ticket opens for the
+    rest, with the parent's open, and comment pointing at the ticket that keeps
+    volume. Commission, agent commission and swaps split by volume: the
+    reduced ticket's share is rounded, the child gets the original minus it."""
+    cur.execute("SELECT GREATEST(COALESCE((SELECT MAX(TICKET) FROM xcore.XCORE_ORDER_MT4), 0),"
+                " COALESCE((SELECT MAX(TICKET) FROM mt4.MT4_TRADES), 0))")
+    child_ticket = cur.fetchone()[0] + 1
+    rest = t["VOLUME"] - keep
+    child = dict(t, TICKET=child_ticket, VOLUME=rest)
+    for k in ("COMMISSION", "COMMISSION_AGENT", "SWAPS"):
+        share = money(t[k] * keep / t["VOLUME"], t["DEPOSIT"])
+        child[k] = t[k] - share
+        t[k] = share
+    t["VOLUME"] = keep
+    side = "buy" if t["CMD"] == 0 else "sell"
+    child_pl = profit(side, contracts(child, rest), child["OPEN_PRICE"], child["CLOSE_PRICE"],
+                      child["CONV_RATE2"], child["DEPOSIT"])
+    cur.execute(
+        "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
+        "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "
+        "VALUES ('trade/mt4', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (child_ticket, t["LOGIN"], t["SYMBOL"], t["DIGITS"], t["CMD"], rest, t["OPEN_TIME"], child["OPEN_PRICE"],
+         OPEN_DATE, child["CLOSE_PRICE"], child["CONV_RATE1"], child["CONV_RATE2"], child["COMMISSION"],
+         child["COMMISSION_AGENT"], child["SWAPS"], child_pl, f"from: {from_ticket}"))
+    return child
+
+
+def close_by_hedge(cur, tickets: list[int], when: datetime) -> list[str]:
+    """Close the selected open tickets against each other (domain notes,
+    "Close by hedge"). Nothing is sent to XCore."""
+    ts = [load_ticket(cur, n) for n in tickets]
+    if len({(t["LOGIN"], t["SYMBOL"]) for t in ts}) != 1:
+        raise SystemExit("close by hedge needs tickets of one login and one symbol")
+    if any(str(t["CLOSE_TIME"]) != OPEN_DATE or t["CMD"] not in (0, 1) for t in ts):
+        raise SystemExit("close by hedge needs open buy and sell tickets")
+    order = lambda t: (t["OPEN_TIME"], t["TICKET"])
+    buys = sorted((t for t in ts if t["CMD"] == 0), key=order)
+    sells = sorted((t for t in ts if t["CMD"] == 1), key=order)
+    log = []
+    while buys and sells:
+        main, other = sorted((buys[0], sells[0]), key=order)
+        main_list, other_list = (buys, sells) if main is buys[0] else (sells, buys)
+        main_list.pop(0)
+        other_list.pop(0)
+        if main["VOLUME"] != other["VOLUME"]:
+            bigger, smaller, bigger_list = ((main, other, main_list) if main["VOLUME"] > other["VOLUME"]
+                                            else (other, main, other_list))
+            child = partial_close(cur, bigger, smaller["VOLUME"], main["TICKET"])
+            bigger_list.insert(0, child)
+            log.append(f"ticket {bigger['TICKET']} partially closed: {child['VOLUME'] / 100:g} lots to child "
+                       f"{child['TICKET']}")
+        # ticket 1 closes at ticket 2's open and takes over its costs
+        side = "buy" if main["CMD"] == 0 else "sell"
+        close_price = other["OPEN_PRICE"]
+        conv2 = rate(main["BASE"], main["DEPOSIT"], main["QUOTE"], close_price)
+        pl = profit(side, contracts(main, main["VOLUME"]), main["OPEN_PRICE"], close_price, conv2, main["DEPOSIT"])
+        cur.execute(
+            "UPDATE mt4.MT4_TRADES SET VOLUME = %s, CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, "
+            "COMMISSION = %s, COMMISSION_AGENT = %s, SWAPS = %s, PROFIT = %s "
+            "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
+            (main["VOLUME"], other["OPEN_TIME"], close_price, conv2, main["COMMISSION"] + other["COMMISSION"],
+             main["COMMISSION_AGENT"] + other["COMMISSION_AGENT"], main["SWAPS"] + other["SWAPS"], pl,
+             main["TICKET"]))
+        # ticket 2 is emptied
+        cur.execute(
+            "UPDATE mt4.MT4_TRADES SET VOLUME = 0, CLOSE_TIME = %s, CLOSE_PRICE = OPEN_PRICE, CONV_RATE2 = %s, "
+            "COMMISSION = 0, COMMISSION_AGENT = 0, SWAPS = 0, PROFIT = 0, COMMENT = %s "
+            "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
+            (when.strftime("%Y-%m-%d %H:%M:%S"), rate(other["BASE"], other["DEPOSIT"], other["QUOTE"],
+                                                       other["OPEN_PRICE"]),
+             f"close by hedge: {main['TICKET']}", other["TICKET"]))
+        log.append(f"ticket {main['TICKET']} closed by {other['TICKET']} at {close_price}: "
+                   f"{main['VOLUME'] / 100:g} lots, P/L {pl}")
+    return log
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -111,11 +216,17 @@ def main() -> None:
     p.add_argument("--lots", required=True)
     p.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT request time")
     p.add_argument("--seed", type=int)
+    h = sub.add_parser("hedge", help="close open tickets against each other (close by hedge)")
+    h.add_argument("--tickets", type=int, nargs="+", required=True)
+    h.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT request time")
     args = parser.parse_args()
 
     conn = connect()
     cur = conn.cursor()
-    print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, random.Random(args.seed)))
+    if args.action == "open":
+        print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, random.Random(args.seed)))
+    else:
+        print("\n".join(close_by_hedge(cur, args.tickets, args.time)))
     conn.commit()
     conn.close()
 

@@ -732,8 +732,9 @@ program that will fill `MT4_TRADES`.
    - Close price = ticket 2's open price.
    - Add ticket 2's commission, agent commission and swaps to ticket 1.
    - Calculate profit and lock it in, using `CONV_RATE2` at that close time.
-   - The comment says nothing, even if ticket 1 was reduced by a partial
-     close.
+   - Close by hedge doesn't touch ticket 1's comment, even if ticket 1 was
+     reduced by a partial close. A child that becomes ticket 1 keeps its
+     `from: [ticket]` comment.
 5. Ticket 2:
    - Volume = 0.
    - Commission, agent commission and swaps = 0, now that they have moved to
@@ -748,6 +749,12 @@ program that will fill `MT4_TRADES`.
 **XCore doesn't know about close by hedge.** Nothing is sent to XCore, so
 MT4 and XCore volumes diverge. That's why Josh had to brute-force trade
 matching once the volumes on the two systems differed.
+
+**Comments are not an audit trail.** The hedge comment overwrites whatever
+was there, including a closing child's `from: [ticket]`. So following
+`from:` and `close by hedge:` comments back to the original ticket breaks
+after a few steps. Josh could never make that work, which is the other
+reason he brute-force matched.
 
 ### Config history
 
