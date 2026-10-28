@@ -9,7 +9,9 @@
 -- Needs reference.pattern_pos_re and reference.pattern_neg_re
 -- (stored procedure - connector account login.sql).
 --
--- Run:  CALL reporting.giveup();
+-- Run:  CALL reporting.giveup(NULL, NULL);       -- every order
+--       CALL reporting.giveup('2026-10-27 14:00:00', '2026-10-27 15:00:00');
+--       -- orders whose ORDER_TIME is in [from, to); other rows are kept
 -- Out:  reporting.giveup_trades, one row per filled leg and matching rule.
 
 CREATE DATABASE IF NOT EXISTS reporting;
@@ -21,6 +23,7 @@ DROP TABLE IF EXISTS reporting.giveup_trades;
 
 CREATE TABLE reporting.giveup_trades (
     ORDER_ID             BIGINT         NOT NULL,
+    ORDER_TIME           DATETIME       NOT NULL,   -- order CLOSE_MILLI, GMT, to the second
     CONNECTOR            VARCHAR(32)    NOT NULL,
     ACCOUNT              VARCHAR(32)    NOT NULL,
     SYMBOL               VARCHAR(12)    NOT NULL,   -- XCore symbol
@@ -45,7 +48,8 @@ CREATE TABLE reporting.giveup_trades (
     WITH_MARKUP          TINYINT        NOT NULL,
     GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- OrderFillPrice when WITH_MARKUP = 1, leg FILLPRICE1 when 0; rounded by GIVEUP_SIDE
     PRIMARY KEY (GIVEUP_ID, ORDER_ID, LEG_ID),
-    INDEX (GIVEUP_LOGIN)
+    INDEX (GIVEUP_LOGIN),
+    INDEX (ORDER_TIME)
 );
 
 -- ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ DROP PROCEDURE IF EXISTS reporting.giveup;
 
 DELIMITER //
 
-CREATE PROCEDURE reporting.giveup()
+CREATE PROCEDURE reporting.giveup(IN p_from DATETIME, IN p_to DATETIME)
 BEGIN
     DECLARE done INT DEFAULT FALSE;
     DECLARE g_id, g_target INT;
@@ -77,7 +81,10 @@ BEGIN
     DROP TEMPORARY TABLE IF EXISTS reporting.order_leg_mt4;
 
     CREATE TEMPORARY TABLE reporting.order_leg_mt4
-        SELECT ord.ORDER_ID, ord.CONNECTOR, ord.ACCOUNT, ord.SYMBOL, sym.digits,
+        SELECT ord.ORDER_ID,
+               -- GMT whatever the session time zone (FROM_UNIXTIME would use it)
+               TIMESTAMPADD(SECOND, ord.CLOSE_MILLI DIV 1000, '1970-01-01 00:00:00') AS ORDER_TIME,
+               ord.CONNECTOR, ord.ACCOUNT, ord.SYMBOL, sym.digits,
                ord.SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                ord.FILLPRICE as OrderFillPrice,
                leg.LEG_ID, b_book, LP, Markup_Bid, Markup_Ask, leg.fillsize as LegFillSize, fillprice1, fillprice2,
@@ -89,9 +96,14 @@ BEGIN
         on ord.symbol = sym.xcore_symbol
         left join xcore.xcore_leg leg
         on ord.order_id = leg.order_id
-        where leg.fillsize > 0;
+        where leg.fillsize > 0
+        and (p_from IS NULL OR TIMESTAMPADD(SECOND, ord.CLOSE_MILLI DIV 1000, '1970-01-01 00:00:00') >= p_from)
+        and (p_to   IS NULL OR TIMESTAMPADD(SECOND, ord.CLOSE_MILLI DIV 1000, '1970-01-01 00:00:00') <  p_to);
 
-    TRUNCATE TABLE reporting.giveup_trades;
+    -- Rebuild only the window, so earlier hours stay.
+    DELETE FROM reporting.giveup_trades
+    WHERE (p_from IS NULL OR ORDER_TIME >= p_from)
+      AND (p_to   IS NULL OR ORDER_TIME <  p_to);
 
     OPEN rules;
     read_loop: LOOP
@@ -111,10 +123,10 @@ BEGIN
 
         -- Static SQL: the rule's values are plain variables, nothing is spliced in.
         INSERT INTO reporting.giveup_trades
-              (ORDER_ID, CONNECTOR, ACCOUNT, SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
+              (ORDER_ID, ORDER_TIME, CONNECTOR, ACCOUNT, SYMBOL, SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                OrderFillPrice, LEG_ID, B_BOOK, LP, MARKUP_BID, MARKUP_ASK, LegFillSize, FILLPRICE1, FILLPRICE2,
                GIVEUP_ID, GIVEUP_LOGIN, REVERSE, GIVEUP_SIDE, WITH_MARKUP, GIVEUP_PRICE)
-        SELECT t.ORDER_ID, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
+        SELECT t.ORDER_ID, t.ORDER_TIME, t.CONNECTOR, t.ACCOUNT, t.SYMBOL, t.SIDE, t.SUBID1, t.SUBID2, t.SUBID3, t.SUBID4,
                t.OrderFillPrice, t.LEG_ID, t.b_book, t.LP, t.Markup_Bid, t.Markup_Ask, t.LegFillSize, t.fillprice1, t.fillprice2,
                g_id AS GIVEUP_ID,
                g_target AS GIVEUP_LOGIN,

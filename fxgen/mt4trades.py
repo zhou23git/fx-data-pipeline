@@ -4,13 +4,15 @@
   python -m fxgen.mt4trades hedge --tickets 1000010 1000013 --time "2026-10-27 16:00:00"
   python -m fxgen.mt4trades api --account uk_cov_100 --symbol EUR/USD --side sell --lots 3 --time "2026-10-27 17:00:00"
   python -m fxgen.mt4trades book --orders 21 22 23 24 25
+  python -m fxgen.mt4trades balance --login 1000 --amount 10000 --time "2026-10-27 08:00:00"
 
 open sends the trade through the bridge simulation (order MT4, XCore order
 and legs, as fxgen.orders does) and, if it fills, writes the MT4 ticket.
 While a ticket is open, CLOSE_PRICE and PROFIT show the price it would close
 at now; CONV_RATE2 stays 0 until it closes. hedge closes open tickets
 against each other. api places an API client's order and books it onto the
-giveup login's tickets; book does that for orders already in XCore. Rules
+giveup login's tickets; book does that for orders already in XCore.
+balance writes a deposit or withdrawal. Rules
 are in docs/domain-notes.md, "MT4 trades" and the two "MT4 trade behaviour"
 sections.
 """
@@ -19,7 +21,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from fxgen.db import connect
@@ -216,6 +218,58 @@ def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) 
     return log
 
 
+def balance(cur, login: int, amount: str, when: datetime, comment: str) -> str:
+    """A deposit (amount > 0) or withdrawal (amount < 0): a CMD 6 ticket with
+    the amount in PROFIT, open and close time both the action time, and the
+    trade fields left blank."""
+    cur.execute("SELECT CURRENCY FROM mt4.MT4_USERS WHERE SERVER = 'trade/mt4' AND LOGIN = %s", (login,))
+    (deposit,) = cur.fetchall()[0]
+    ticket, value = next_ticket(cur), money(dec(amount), deposit)
+    done = when.strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, CMD, OPEN_TIME, CLOSE_TIME, PROFIT, COMMENT) "
+                "VALUES ('trade/mt4', %s, %s, 6, %s, %s, %s, %s)", (ticket, login, done, done, value, comment))
+    return f"ticket {ticket}: {login} {'deposit' if value > 0 else 'withdrawal'} {value} {deposit} at {done}"
+
+
+# Open positions. Placeholders until Josh gives his two queries (direct
+# clients and giveup logins are fetched separately).
+DIRECT_OPEN_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD FROM mt4.MT4_TRADES t "
+                   "WHERE t.SERVER = 'trade/mt4' AND t.CMD IN (0, 1) AND t.CLOSE_TIME = '1970-01-01 00:00:00' "
+                   "AND t.LOGIN IN (SELECT LOGIN FROM reference.connector_account_logins) "
+                   "ORDER BY t.OPEN_TIME, t.TICKET")
+GIVEUP_OPEN_SQL = ("SELECT TICKET FROM mt4.MT4_TRADES WHERE SERVER = 'trade/mt4' AND LOGIN = %s AND SYMBOL = %s "
+                   "AND CMD = %s AND CLOSE_TIME = '1970-01-01 00:00:00' ORDER BY OPEN_TIME, TICKET")
+
+
+def close_trade(cur, ticket: int, when: datetime, rng: random.Random) -> tuple[str, Decimal]:
+    """A direct client fully closes a ticket: order MT4 (CLOSE = 1), XCore
+    order and legs through the bridge simulation, then the ticket is closed at
+    the MT4 fill. Returns a log line and the lots closed (0 if rejected)."""
+    t = load_ticket(cur, ticket)
+    cur.execute(TRADABLE_SQL + " WHERE mt4.LOGIN = %s AND mt4.SYMBOL = %s", (t["LOGIN"], t["SYMBOL"]))
+    cols = [c[0] for c in cur.description]
+    row = dict(zip(cols, cur.fetchall()[0]))
+    side = "buy" if t["CMD"] == 0 else "sell"
+    point = Decimal(1).scaleb(-int(row["DIGITS"]))
+    mid = (Decimal(MIDS[row["XCORE_SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
+    lots = Decimal(t["VOLUME"]) / 100
+    ex = execute(row, "sell" if side == "buy" else "buy", lot_contracts(row, lots), True,
+                 int(when.replace(tzinfo=timezone.utc).timestamp() * 1000), mid, rng, None)
+    _, size, fill_ms = save(cur, row, ex, ticket, True)
+    if not size:
+        return f"ticket {ticket}: close rejected", Decimal(0)
+    _, close_price = mt4_fill(row, ex, True)
+    conv2 = rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], close_price)
+    commission = t["COMMISSION"] + money(
+        -Decimal(row["COMM_BASE"]) * t["VOLUME"] / 100 * dec(t["CONTRACT_SIZE"]) * conv2 / 100_000, t["DEPOSIT"])
+    pl = profit(side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], close_price, conv2, t["DEPOSIT"])
+    closed = datetime.fromtimestamp(fill_ms // 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("UPDATE mt4.MT4_TRADES SET CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, COMMISSION = %s, "
+                "PROFIT = %s WHERE SERVER = 'trade/mt4' AND TICKET = %s",
+                (closed, close_price, conv2, commission, pl, ticket))
+    return f"ticket {ticket}: {t['LOGIN']} closed {lots:g} lots {t['SYMBOL']} at {close_price}, P/L {pl}", lots
+
+
 GIVEUP_SYMBOL_SQL = ("SELECT r.MT4_SYMBOL, s.DIGITS, s.CURRENCY AS BASE, u.CURRENCY AS DEPOSIT, gs.COMM_BASE, "
                      "s.CONTRACT_SIZE, r.CONTRACTS_PER_LOT, r.SCALING_MULTIPLIER "
                      "FROM mt4.MT4_USERS u "
@@ -239,12 +293,10 @@ def book_leg(cur, g: dict, when: datetime, rng: random.Random) -> list[str]:
     quote = g["SYMBOL"].split("/")[1] if "/" in g["SYMBOL"] else "USD"
     price = dec(g["GIVEUP_PRICE"])
     volume = int(dec(g["LegFillSize"]) / lot_contracts(sym, "0.01"))
-    done = when.strftime("%Y-%m-%d %H:%M:%S")
+    done = when.strftime("%Y-%m-%d %H:%M:%S")   # ORDER_TIME, GMT
     comm_rate = -Decimal(sym["COMM_BASE"]) * dec(sym["CONTRACT_SIZE"]) / 100 / 100_000   # per volume unit, per side
 
-    cur.execute("SELECT TICKET FROM mt4.MT4_TRADES WHERE SERVER = 'trade/mt4' AND LOGIN = %s AND SYMBOL = %s "
-                "AND CMD = %s AND CLOSE_TIME = %s ORDER BY OPEN_TIME, TICKET",
-                (login, sym["MT4_SYMBOL"], 1 if side == "buy" else 0, OPEN_DATE))
+    cur.execute(GIVEUP_OPEN_SQL, (login, sym["MT4_SYMBOL"], 1 if side == "buy" else 0))
     opposite = [load_ticket(cur, n) for (n,) in cur.fetchall()]
     log, remaining = [], volume
     conv2 = rate(sym["BASE"], deposit, quote, price)
@@ -283,35 +335,58 @@ def book_leg(cur, g: dict, when: datetime, rng: random.Random) -> list[str]:
     return log
 
 
-def book_order(cur, order_id: int, rng: random.Random) -> list[str]:
-    """XCore originates API login tickets: run the giveups and book this
-    order's API giveup rows, one per filled leg, in leg order."""
-    cur.callproc("reporting.giveup")
-    cur.execute("SELECT g.*, o.CLOSE_MILLI FROM reporting.giveup_trades g "
-                "JOIN xcore.XCORE_ORDER o ON o.ORDER_ID = g.ORDER_ID "
-                "WHERE g.ORDER_ID = %s AND g.CONNECTOR <> 'trade/mt4' ORDER BY g.LEG_ID, g.GIVEUP_ID", (order_id,))
-    cols = [c[0] for c in cur.description]
-    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    log = [f"order {order_id}: no API giveup rows"] if not rows else []
+def book_rows(cur, rows: list[dict], rng: random.Random) -> list[str]:
+    log = []
     for g in rows:
-        when = datetime.fromtimestamp(g["CLOSE_MILLI"] // 1000, tz=timezone.utc)
-        log.append(f"order {order_id} leg {g['LEG_ID']} -> login {g['GIVEUP_LOGIN']}: {g['GIVEUP_SIDE']} "
-                   f"{g['LegFillSize']:f} {g['SYMBOL']} at {g['GIVEUP_PRICE']}")
-        log += book_leg(cur, g, when, rng)
+        log.append(f"order {g['ORDER_ID']} leg {g['LEG_ID']} rule {g['GIVEUP_ID']} -> login {g['GIVEUP_LOGIN']}: "
+                   f"{g['GIVEUP_SIDE']} {g['LegFillSize']:f} {g['SYMBOL']} at {g['GIVEUP_PRICE']}")
+        log += book_leg(cur, g, g["ORDER_TIME"], rng)
     return log
 
 
-def api_order(cur, account: str, symbol: str, side: str, lots: str, when: datetime, rng: random.Random) -> list[str]:
-    """An API client's order through the bridge simulation, then its giveup tickets."""
-    cur.execute(API_SQL + " AND acct.name = %s AND pool.xcore_symbol = %s", (account, symbol))
+def giveup_rows(cur, where: str, args: tuple) -> list[dict]:
+    cur.execute("SELECT * FROM reporting.giveup_trades WHERE " + where +
+                " ORDER BY ORDER_TIME, ORDER_ID, LEG_ID, GIVEUP_ID", args)
     cols = [c[0] for c in cur.description]
-    row = dict(zip(cols, cur.fetchall()[0]))
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def book_order(cur, order_id: int, rng: random.Random) -> list[str]:
+    """XCore originates giveup login tickets: run the giveups and book every
+    giveup row of this order, one per filled leg and rule."""
+    cur.execute("SELECT TIMESTAMPADD(SECOND, CLOSE_MILLI DIV 1000, '1970-01-01') FROM xcore.XCORE_ORDER "
+                "WHERE ORDER_ID = %s", (order_id,))
+    (t,) = cur.fetchall()[0]
+    cur.callproc("reporting.giveup", (t, t + timedelta(seconds=1)))
+    rows = giveup_rows(cur, "ORDER_ID = %s", (order_id,))
+    return book_rows(cur, rows, rng) if rows else [f"order {order_id}: no giveup rows"]
+
+
+def book_window(cur, start: datetime, end: datetime, rng: random.Random) -> list[str]:
+    """Run the giveups for orders completed in [start, end) and book them all
+    in order-time order, so FIFO sees them as they happened."""
+    cur.callproc("reporting.giveup", (start, end))
+    return book_rows(cur, giveup_rows(cur, "ORDER_TIME >= %s AND ORDER_TIME < %s", (start, end)), rng)
+
+
+def api_order_row(cur, row: dict, side: str, lots, when: datetime, rng: random.Random) -> tuple[str, int]:
+    """An API client's order through the bridge simulation (API reference row)."""
     point = Decimal(1).scaleb(-int(row["DIGITS"]))
-    mid = (Decimal(MIDS[symbol]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
+    mid = (Decimal(MIDS[row["XCORE_SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
     ms = int(when.replace(tzinfo=timezone.utc).timestamp() * 1000)
     ex = execute(row, side, lot_contracts(row, lots), False, ms, mid, rng, None)
     order_id = save_api(cur, row, ex)
-    return [f"{account} {side} {lots} {symbol}: order {order_id} filled {ex.fillsize:f}"] + book_order(cur, order_id, rng)
+    return (f"{row['CONNECTOR_ACCOUNT']} {side} {lots} {row['XCORE_SYMBOL']}: order {order_id} "
+            f"filled {ex.fillsize:f}"), order_id
+
+
+def api_order(cur, account: str, symbol: str, side: str, lots: str, when: datetime, rng: random.Random) -> list[str]:
+    """An API client's order, then its giveup tickets."""
+    cur.execute(API_SQL + " AND acct.name = %s AND pool.xcore_symbol = %s", (account, symbol))
+    cols = [c[0] for c in cur.description]
+    row = dict(zip(cols, cur.fetchall()[0]))
+    line, order_id = api_order_row(cur, row, side, lots, when, rng)
+    return [line] + book_order(cur, order_id, rng)
 
 
 def main() -> None:
@@ -338,17 +413,24 @@ def main() -> None:
     b = sub.add_parser("book", help="book existing XCore orders onto their API giveup logins' tickets")
     b.add_argument("--orders", type=int, nargs="+", required=True)
     b.add_argument("--seed", type=int)
+    d = sub.add_parser("balance", help="a deposit (positive amount) or withdrawal (negative amount)")
+    d.add_argument("--login", type=int, required=True)
+    d.add_argument("--amount", required=True, help="in the deposit currency; negative for a withdrawal")
+    d.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT action time")
+    d.add_argument("--comment", default="")
     args = parser.parse_args()
 
     conn = connect()
     cur = conn.cursor()
-    rng = random.Random(args.seed)
+    rng = random.Random(getattr(args, "seed", None))
     if args.action == "open":
         print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, rng))
     elif args.action == "hedge":
         print("\n".join(close_by_hedge(cur, args.tickets, args.time, rng)))
     elif args.action == "api":
         print("\n".join(api_order(cur, args.account, args.symbol, args.side, args.lots, args.time, rng)))
+    elif args.action == "balance":
+        print(balance(cur, args.login, args.amount, args.time, args.comment))
     else:
         print("\n".join(line for o in args.orders for line in book_order(cur, o, rng)))
     conn.commit()

@@ -667,6 +667,17 @@ which is why the simulation keeps all three.
 | PROFIT | see below |
 | COMMENT | "a whole can of worms" that Josh will explain soon |
 
+**Deposits and withdrawals (Josh, 2026-10-28).**
+- Each one is an MT4_TRADES ticket with `CMD` 6 (balance).
+- The amount is in `PROFIT`: positive for a deposit, negative for a
+  withdrawal, in the deposit currency.
+- `OPEN_TIME` is the action time.
+- The trade fields are blank: no symbol, volume, prices, rates, commission
+  or swaps.
+- Josh doesn't remember whether `CLOSE_TIME` was the open time or
+  1970-01-01. It probably doesn't matter, so the simulation uses the open
+  time.
+
 **Swaps.**
 - The swap plugin sets a swap price delta, which is used to calculate a
   dollar amount.
@@ -725,8 +736,9 @@ program that will fill `MT4_TRADES`.
      - The reduced ticket's share is rounded to the deposit currency.
      - The child gets the original amount minus that rounded share, so the
        two always add back to the original.
-   - Partial close works the same way however it is caused: by close by
-     hedge or by another method.
+   - Close by hedge is the only way a direct client's ticket gets partially
+     closed. Direct clients have no other partial-close mechanism; API logins
+     get partial closes from FIFO giveups.
 4. Ticket 1 (now the same size as ticket 2):
    - Close time = when the close-by-hedge process completes, not ticket 2's
      open time.
@@ -748,7 +760,6 @@ program that will fill `MT4_TRADES`.
    - Comment = `close by hedge: [ticket 1]`.
 6. Keep pairing down the lists until one runs out. The lists can change as
    it goes: a remainder ticket from step 3 takes the parent's place.
-   Partial closes will be covered later.
 
 **XCore doesn't know about close by hedge.** Nothing is sent to XCore, so
 MT4 and XCore volumes diverge. That's why Josh had to brute-force trade
@@ -822,6 +833,54 @@ reason he brute-force matched.
 | Original ticket, closed by a later order | `[orderID1]:[orderID2]` |
 | Child of a partial close, open | `f[parent ticket]` |
 | Child, closed by a later order | `f[parent ticket]:[orderID2]` |
+
+### Hourly process (Josh, 2026-10-28)
+
+Josh's real process ran hourly at about :55 and had to finish before the
+next hour started. `fxgen/hourly.py` simulates it for a given GMT hour. Times
+are simulated: events fall between :00 and :55.
+
+| Step | Direct clients | API clients |
+|---|---|---|
+| 1 | Run the bridge reference (current trading conditions) | Run the API account reference |
+| 2 | Fetch open tickets and fully close a random subset: order MT4, XCore order and legs, ticket closed | Place API orders, with order and legs from the reference (markup, book, provider) |
+| 3 | Open trades for a random set of bridge logins | Run the giveup procedure for the hour's orders |
+| 4 | Fetch open positions again and close some by hedge, at :55 | Fetch open positions and book every giveup row: open, close or partially close tickets FIFO |
+
+- **Every giveup rule is booked.** That includes copies of direct-client
+  orders to the House and Coverage logins. Josh adds rules as he needs them,
+  so nothing in the code lists which rules to book.
+- **Giveup window.** `reporting.giveup(from, to)` has an `ORDER_TIME` field:
+  the order's `CLOSE_MILLI` in GMT, to the second. Josh used
+  `FROM_UNIXTIME(close_milli/1000)`, but that returns the session's time
+  zone (Pacific on his PC), so the procedure uses `TIMESTAMPADD`. A run
+  rebuilds only its window's rows.
+- **Open-position queries.** Direct clients and giveup logins are fetched
+  separately. Josh will provide both queries.
+
+**Activity levels (Josh's Equiti experience).**
+- About 50% of retail clients traded every day.
+- About 90% of tickets were closed before the end of the day.
+- B2B API volume is huge: 40-50% of the day's volume.
+- B2B direct clients traded like active retail clients.
+
+**Simulation settings.** These are in `fxgen/hourly.py`.
+- Each client login trades in an hour with probability 1 - 0.5^(1/24), one
+  to three trades.
+- Each open ticket closes in an hour with probability 25%.
+- 30% of login-symbol pairs holding both sides are closed by hedge.
+- API orders are added until they make up 40-50% of the hour's USD
+  notional.
+- Every bridge login trades, including the House trading logins 20 and 50,
+  which manage the B-book. The risk and coverage logins (10, 30, 40,
+  100-400, 100000) are accounting logins: they get giveup tickets but never
+  send XCore orders. They aren't in the bridge config, so they never trade.
+
+**Giveup logins in practice.** Netting every client copy FIFO gives the House
+logins thousands of tickets and long chains of tiny partial closes (a 3-lot
+ticket closed 0.01 at a time). Josh says the real accounts looked exactly
+like that. Matching them back to orders by brute force was slow, and he never
+solved it; optimising that matching is a topic for later.
 
 ### Config history
 
