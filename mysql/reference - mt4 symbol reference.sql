@@ -1,6 +1,6 @@
-drop table if exists reference.symbol_reference;
+drop table if exists reference.mt4_symbol_reference;
 
-create table reference.symbol_reference
+create table reference.mt4_symbol_reference
 (primary key (MT4_symbol), index(xcore_symbol))
 select SYMBOL as MT4_SYMBOL, `DESCRIPTION`, left(symbol,3) as CCY1, right(left(symbol,6),3) as CCY2,
 	   case when `TYPE` in (1,2,3) then 'FX' when `TYPE`=4 THEN 'METAL' WHEN `TYPE`=5 THEN 'CFD' ELSE NULL END `INSTRUMENT`, 

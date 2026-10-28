@@ -27,7 +27,7 @@ SELECT mt4.*,
        prof.MARKUP_BID, prof.MARKUP_ASK, prof.B_BOOK,
        pool.PROVIDER_ID
 FROM reference.connector_account_logins mt4
-left join reference.symbol_reference sym
+left join reference.mt4_symbol_reference sym
 on mt4.symbol = sym.mt4_symbol
 left join xcore.xcore_liquidity_pool_providers pool
 on mt4.pool_id = pool.pool_id
@@ -53,7 +53,7 @@ on acct.POOL_ID = pool.POOL_ID
 left join xcore.xcore_profile_symbols prof
 on acct.PROFILE_ID = prof.PROFILE_ID
 and pool.xcore_symbol = prof.XCORE_SYMBOL
-join reference.symbol_reference sym
+join reference.mt4_symbol_reference sym
 on sym.XCORE_SYMBOL = pool.XCORE_SYMBOL
 join mt4.mt4_symbols ms
 on ms.SYMBOL = sym.MT4_SYMBOL
