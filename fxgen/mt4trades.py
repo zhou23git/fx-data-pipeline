@@ -1,13 +1,18 @@
-"""Direct MT4 clients' trades in mt4.MT4_TRADES.
+"""MT4 tickets in mt4.MT4_TRADES, for direct MT4 clients and API giveup logins.
 
   python -m fxgen.mt4trades open --login 1000 --symbol EURUSD.retail --side buy --lots 1 --time "2026-10-27 09:00:00"
   python -m fxgen.mt4trades hedge --tickets 1000010 1000013 --time "2026-10-27 16:00:00"
+  python -m fxgen.mt4trades api --account uk_cov_100 --symbol EUR/USD --side sell --lots 3 --time "2026-10-27 17:00:00"
+  python -m fxgen.mt4trades book --orders 21 22 23 24 25
 
 open sends the trade through the bridge simulation (order MT4, XCore order
 and legs, as fxgen.orders does) and, if it fills, writes the MT4 ticket.
 While a ticket is open, CLOSE_PRICE and PROFIT show the price it would close
-at now; CONV_RATE2 stays 0 until it closes. hedge closes open tickets against each other. Rules are in docs/domain-notes.md, "MT4 trades" and "MT4
-trade behaviour: direct clients".
+at now; CONV_RATE2 stays 0 until it closes. hedge closes open tickets
+against each other. api places an API client's order and books it onto the
+giveup login's tickets; book does that for orders already in XCore. Rules
+are in docs/domain-notes.md, "MT4 trades" and the two "MT4 trade behaviour"
+sections.
 """
 from __future__ import annotations
 
@@ -18,7 +23,8 @@ from datetime import datetime, timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from fxgen.db import connect
-from fxgen.orders import FIRST_TICKET, HALF_SPREAD_POINTS, MIDS, TRADABLE_SQL, dec, execute, lot_contracts, mt4_fill, save
+from fxgen.orders import (API_SQL, FIRST_TICKET, HALF_SPREAD_POINTS, MIDS, TRADABLE_SQL, dec, execute, lot_contracts,
+                          mt4_fill, save, save_api)
 
 CURRENCY_DECIMALS = {"JPY": 0}   # deposit currency rounding; 2 otherwise
 OPEN_DATE = "1970-01-01 00:00:00"
@@ -63,6 +69,12 @@ def profit(side: str, contracts: Decimal, open_price: Decimal, close_price: Deci
     return money(sign * (close_price - open_price) * contracts * conv_rate2 / close_price, currency)
 
 
+def next_ticket(cur) -> int:
+    cur.execute("SELECT GREATEST(COALESCE((SELECT MAX(TICKET) FROM xcore.XCORE_ORDER_MT4), 0),"
+                " COALESCE((SELECT MAX(TICKET) FROM mt4.MT4_TRADES), 0))")
+    return max(cur.fetchone()[0] + 1, FIRST_TICKET)
+
+
 def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetime, rng: random.Random) -> str:
     cur.execute(TRADABLE_SQL + " WHERE mt4.LOGIN = %s AND mt4.SYMBOL = %s", (login, symbol))
     cols = [c[0] for c in cur.description]
@@ -72,9 +84,7 @@ def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetim
     base, contract_size = cur.fetchone()
     deposit = row["ACCOUNT_CURRENCY"]
     quote = row["XCORE_SYMBOL"].split("/")[1] if "/" in row["XCORE_SYMBOL"] else "USD"
-    cur.execute("SELECT GREATEST(COALESCE((SELECT MAX(TICKET) FROM xcore.XCORE_ORDER_MT4), 0),"
-                " COALESCE((SELECT MAX(TICKET) FROM mt4.MT4_TRADES), 0))")
-    ticket = max(cur.fetchone()[0] + 1, FIRST_TICKET)
+    ticket = next_ticket(cur)
 
     point = Decimal(1).scaleb(-int(row["DIGITS"]))
     mid = (Decimal(MIDS[row["XCORE_SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
@@ -129,14 +139,12 @@ def contracts(t: dict, volume: int) -> Decimal:
     return Decimal(volume) / 100 * dec(t["CONTRACT_SIZE"])
 
 
-def partial_close(cur, t: dict, keep: int, from_ticket: int) -> dict:
+def partial_close(cur, t: dict, keep: int, comment: str) -> dict:
     """Split ticket t: it keeps `keep` volume and a child ticket opens for the
-    rest, with the parent's open, and comment pointing at the ticket that keeps
-    volume. Commission, agent commission and swaps split by volume: the
-    reduced ticket's share is rounded, the child gets the original minus it."""
-    cur.execute("SELECT GREATEST(COALESCE((SELECT MAX(TICKET) FROM xcore.XCORE_ORDER_MT4), 0),"
-                " COALESCE((SELECT MAX(TICKET) FROM mt4.MT4_TRADES), 0))")
-    child_ticket = cur.fetchone()[0] + 1
+    rest, with the parent's open and the given comment. Commission, agent
+    commission and swaps split by volume: the reduced ticket's share is
+    rounded, the child gets the original minus it."""
+    child_ticket = next_ticket(cur)
     rest = t["VOLUME"] - keep
     child = dict(t, TICKET=child_ticket, VOLUME=rest)
     for k in ("COMMISSION", "COMMISSION_AGENT", "SWAPS"):
@@ -153,7 +161,7 @@ def partial_close(cur, t: dict, keep: int, from_ticket: int) -> dict:
         "VALUES ('trade/mt4', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (child_ticket, t["LOGIN"], t["SYMBOL"], t["DIGITS"], t["CMD"], rest, t["OPEN_TIME"], child["OPEN_PRICE"],
          OPEN_DATE, child["CLOSE_PRICE"], child["CONV_RATE1"], 0, child["COMMISSION"],
-         child["COMMISSION_AGENT"], child["SWAPS"], child_pl, f"from: {from_ticket}"))
+         child["COMMISSION_AGENT"], child["SWAPS"], child_pl, comment))
     return child
 
 
@@ -182,7 +190,7 @@ def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) 
         if main["VOLUME"] != other["VOLUME"]:
             bigger, smaller, bigger_list = ((main, other, main_list) if main["VOLUME"] > other["VOLUME"]
                                             else (other, main, other_list))
-            child = partial_close(cur, bigger, smaller["VOLUME"], main["TICKET"])
+            child = partial_close(cur, bigger, smaller["VOLUME"], f"from: {main['TICKET']}")
             bigger_list.insert(0, child)
             log.append(f"ticket {bigger['TICKET']} partially closed: {child['VOLUME'] / 100:g} lots to child "
                        f"{child['TICKET']}")
@@ -208,6 +216,104 @@ def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) 
     return log
 
 
+GIVEUP_SYMBOL_SQL = ("SELECT r.MT4_SYMBOL, s.DIGITS, s.CURRENCY AS BASE, u.CURRENCY AS DEPOSIT, gs.COMM_BASE, "
+                     "s.CONTRACT_SIZE, r.CONTRACTS_PER_LOT, r.SCALING_MULTIPLIER "
+                     "FROM mt4.MT4_USERS u "
+                     "JOIN reference.mt4_symbol_reference r ON r.XCORE_SYMBOL = %s "
+                     "JOIN mt4.MT4_SYMBOLS s ON s.SERVER = u.SERVER AND s.SYMBOL = r.MT4_SYMBOL "
+                     "JOIN mt4.MT4_GROUP_SECURITIES gs ON gs.SERVER = u.SERVER AND gs.`GROUP` = u.`GROUP` "
+                     "AND gs.SEC_INDEX = s.TYPE "
+                     "WHERE u.SERVER = 'trade/mt4' AND u.LOGIN = %s")
+
+
+def book_leg(cur, g: dict, when: datetime, rng: random.Random) -> list[str]:
+    """Put one giveup row on the giveup login's MT4 tickets: close opposite
+    tickets FIFO (partially closing the last one if needed), then open a ticket
+    for anything left. Comments chain XCore order IDs (domain notes, "MT4
+    trade behaviour: API logins")."""
+    login, order_id, side = g["GIVEUP_LOGIN"], g["ORDER_ID"], g["GIVEUP_SIDE"]
+    cur.execute(GIVEUP_SYMBOL_SQL, (g["SYMBOL"], login))
+    cols = [c[0] for c in cur.description]
+    sym = dict(zip(cols, cur.fetchall()[0]))
+    deposit = sym["DEPOSIT"]
+    quote = g["SYMBOL"].split("/")[1] if "/" in g["SYMBOL"] else "USD"
+    price = dec(g["GIVEUP_PRICE"])
+    volume = int(dec(g["LegFillSize"]) / lot_contracts(sym, "0.01"))
+    done = when.strftime("%Y-%m-%d %H:%M:%S")
+    comm_rate = -Decimal(sym["COMM_BASE"]) * dec(sym["CONTRACT_SIZE"]) / 100 / 100_000   # per volume unit, per side
+
+    cur.execute("SELECT TICKET FROM mt4.MT4_TRADES WHERE SERVER = 'trade/mt4' AND LOGIN = %s AND SYMBOL = %s "
+                "AND CMD = %s AND CLOSE_TIME = %s ORDER BY OPEN_TIME, TICKET",
+                (login, sym["MT4_SYMBOL"], 1 if side == "buy" else 0, OPEN_DATE))
+    opposite = [load_ticket(cur, n) for (n,) in cur.fetchall()]
+    log, remaining = [], volume
+    conv2 = rate(sym["BASE"], deposit, quote, price)
+    for t in opposite:
+        if not remaining:
+            break
+        if t["VOLUME"] > remaining:
+            child = partial_close(cur, t, remaining, f"f{t['TICKET']}")
+            log.append(f"  ticket {t['TICKET']} partially closed: {child['VOLUME'] / 100:g} lots to child "
+                       f"{child['TICKET']}")
+        t_side = "buy" if t["CMD"] == 0 else "sell"
+        pl = profit(t_side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], price, conv2, deposit)
+        commission = t["COMMISSION"] + money(comm_rate * t["VOLUME"] * conv2, deposit)
+        cur.execute(
+            "UPDATE mt4.MT4_TRADES SET VOLUME = %s, CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, "
+            "COMMISSION = %s, PROFIT = %s, COMMENT = CONCAT(COMMENT, ':', %s) "
+            "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
+            (t["VOLUME"], done, price, conv2, commission, pl, order_id, t["TICKET"]))
+        log.append(f"  ticket {t['TICKET']} closed: {t['VOLUME'] / 100:g} lots at {price}, P/L {pl}")
+        remaining -= t["VOLUME"]
+    if remaining:
+        ticket = next_ticket(cur)
+        conv1 = rate(sym["BASE"], deposit, quote, price)
+        mid = (Decimal(MIDS[g["SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(Decimal(1).scaleb(-sym["DIGITS"]))
+        floating = close_quote(dict(DIGITS=sym["DIGITS"], XCORE_SYMBOL=g["SYMBOL"], SPREAD_DIFF=0,
+                                    MARKUP_BID=0, MARKUP_ASK=0), side, mid)
+        size = Decimal(remaining) / 100 * dec(sym["CONTRACT_SIZE"])
+        pl = profit(side, size, price, floating, rate(sym["BASE"], deposit, quote, floating), deposit)
+        cur.execute(
+            "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
+            "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "
+            "VALUES ('trade/mt4', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, 0, 0, %s, %s)",
+            (ticket, login, sym["MT4_SYMBOL"], sym["DIGITS"], 0 if side == "buy" else 1, remaining, done, price,
+             OPEN_DATE, floating, conv1, money(comm_rate * remaining * conv1, deposit), pl, str(order_id)))
+        log.append(f"  ticket {ticket} opened: {side} {remaining / 100:g} lots at {price}")
+    return log
+
+
+def book_order(cur, order_id: int, rng: random.Random) -> list[str]:
+    """XCore originates API login tickets: run the giveups and book this
+    order's API giveup rows, one per filled leg, in leg order."""
+    cur.callproc("reporting.giveup")
+    cur.execute("SELECT g.*, o.CLOSE_MILLI FROM reporting.giveup_trades g "
+                "JOIN xcore.XCORE_ORDER o ON o.ORDER_ID = g.ORDER_ID "
+                "WHERE g.ORDER_ID = %s AND g.CONNECTOR <> 'trade/mt4' ORDER BY g.LEG_ID, g.GIVEUP_ID", (order_id,))
+    cols = [c[0] for c in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    log = [f"order {order_id}: no API giveup rows"] if not rows else []
+    for g in rows:
+        when = datetime.fromtimestamp(g["CLOSE_MILLI"] // 1000, tz=timezone.utc)
+        log.append(f"order {order_id} leg {g['LEG_ID']} -> login {g['GIVEUP_LOGIN']}: {g['GIVEUP_SIDE']} "
+                   f"{g['LegFillSize']:f} {g['SYMBOL']} at {g['GIVEUP_PRICE']}")
+        log += book_leg(cur, g, when, rng)
+    return log
+
+
+def api_order(cur, account: str, symbol: str, side: str, lots: str, when: datetime, rng: random.Random) -> list[str]:
+    """An API client's order through the bridge simulation, then its giveup tickets."""
+    cur.execute(API_SQL + " AND acct.name = %s AND pool.xcore_symbol = %s", (account, symbol))
+    cols = [c[0] for c in cur.description]
+    row = dict(zip(cols, cur.fetchall()[0]))
+    point = Decimal(1).scaleb(-int(row["DIGITS"]))
+    mid = (Decimal(MIDS[symbol]) * dec(1 + rng.gauss(0, 0.0005))).quantize(point)
+    ms = int(when.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    ex = execute(row, side, lot_contracts(row, lots), False, ms, mid, rng, None)
+    order_id = save_api(cur, row, ex)
+    return [f"{account} {side} {lots} {symbol}: order {order_id} filled {ex.fillsize:f}"] + book_order(cur, order_id, rng)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -222,14 +328,29 @@ def main() -> None:
     h.add_argument("--tickets", type=int, nargs="+", required=True)
     h.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT time the process completes")
     h.add_argument("--seed", type=int)
+    a = sub.add_parser("api", help="an API client's order, booked onto its giveup login's tickets")
+    a.add_argument("--account", required=True, help="XCore connector account, e.g. uk_cov_100")
+    a.add_argument("--symbol", required=True, help="XCore symbol, e.g. EUR/USD")
+    a.add_argument("--side", choices=("buy", "sell"), required=True)
+    a.add_argument("--lots", required=True)
+    a.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT request time")
+    a.add_argument("--seed", type=int)
+    b = sub.add_parser("book", help="book existing XCore orders onto their API giveup logins' tickets")
+    b.add_argument("--orders", type=int, nargs="+", required=True)
+    b.add_argument("--seed", type=int)
     args = parser.parse_args()
 
     conn = connect()
     cur = conn.cursor()
+    rng = random.Random(args.seed)
     if args.action == "open":
-        print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, random.Random(args.seed)))
+        print(open_trade(cur, args.login, args.symbol, args.side, args.lots, args.time, rng))
+    elif args.action == "hedge":
+        print("\n".join(close_by_hedge(cur, args.tickets, args.time, rng)))
+    elif args.action == "api":
+        print("\n".join(api_order(cur, args.account, args.symbol, args.side, args.lots, args.time, rng)))
     else:
-        print("\n".join(close_by_hedge(cur, args.tickets, args.time, random.Random(args.seed))))
+        print("\n".join(line for o in args.orders for line in book_order(cur, o, rng)))
     conn.commit()
     conn.close()
 

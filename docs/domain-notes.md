@@ -779,7 +779,49 @@ was there, including a closing child's `from: [ticket]`. So following
 after a few steps. Josh could never make that work, which is the other
 reason he brute-force matched.
 
-### Config history
+### MT4 trade behaviour: API logins (Josh, 2026-10-28, first pass)
+
+- **XCore originates every API login ticket.** When an order executes and
+  the giveup runs, the giveup's MT4 login gets the ticket.
+- **No opposite sides.** An API login may hold any number of tickets in
+  the same symbol and side, but never one on the opposite side. So there
+  is no close by hedge.
+- **FIFO close.** An order on the opposite side closes the login's open
+  tickets oldest first.
+- **Partial closes:** there can be almost any number of them. A partial
+  close works as for direct clients: the ticket is reduced and closed, and
+  a child ticket keeps the rest of the volume.
+- **New ticket.** A true new symbol and side opens a ticket whose comment
+  is the XCore order ID.
+- **Bigger than the position.** An order bigger than the open opposite
+  position closes every ticket FIFO. The remainder then opens a new ticket
+  on the order's side, with comment `[orderID2]`.
+- **Every ticket an order closes** gets `:[orderID2]` appended, including
+  the last one, even if it is only partly closed.
+- **Partial-close direction.** When the oldest ticket is bigger than what is
+  left of the order:
+  - The ticket is cut down to that size and closed, with comment
+    `[orderID1]:[orderID2]`.
+  - The child keeps the rest, with comment `f[ticket]`.
+- **Per order or per leg.**
+  - Real XCore gave up per order when there was no LP filter.
+  - The giveup simulation works per leg, so the simulation books one MT4
+    ticket action per leg.
+- **Giveup price.**
+  - With `WITH_MARKUP` = 1 it is always `OrderFillPrice`, rounded in the
+    broker's favour.
+  - With `WITH_MARKUP` = 0 it is always the leg's `FILLPRICE1`. That price
+    is already on digits in the simulation, but in real XCore to MT4 it
+    gets the same rounding.
+
+**Comments.** The comment builds up as `:`-joined XCore order IDs.
+
+| Ticket state | Comment |
+|---|---|
+| Original ticket, open | `[orderID1]` |
+| Original ticket, closed by a later order | `[orderID1]:[orderID2]` |
+| Child of a partial close, open | `f[parent ticket]` |
+| Child, closed by a later order | `f[parent ticket]:[orderID2]` |
 
 ### Config history
 
