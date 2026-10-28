@@ -514,8 +514,17 @@ which is why the simulation keeps all three.
 - Built as `reporting.giveup()` (`mysql/stored procedure - giveup.sql`).
   - A cursor reads the rules in `GIVEUP_ID` order, turns each one into regex
     conditions and appends its matches to `reporting.giveup_trades`.
-  - Josh's outputs: `GIVEUP_LOGIN` is the rule's `TARGET`. `GIVEUP_PRICE` is
-    leg `FILLPRICE1` when `WITH_MARKUP` = 0, and `FILLPRICE2` when it is 1.
+  - Josh's outputs: `GIVEUP_LOGIN` is the rule's `TARGET`.
+  - `GIVEUP_PRICE` is the order fill price (the order's size-weighted average,
+    with XCore markup) when `WITH_MARKUP` = 1. It is the leg's `FILLPRICE1`
+    when `WITH_MARKUP` = 0.
+  - The price is then rounded to the symbol's digits in the broker's favour,
+    the same possibly illegal floor/ceiling rule MT4 uses: buys round up,
+    sells round down.
+    - Only the order average needs rounding; a leg price is already on the
+      digits.
+    - Every leg of a swept order is copied at the same rounded average.
+  - `DIGITS` comes from `reference.xcore_symbol_reference`.
   - The rows it matches come from Josh's order / leg / order MT4 reporting
     query, with the matched fields added.
   - Every matching rule makes a copy, so an NZ B-book retail trade goes to 10,

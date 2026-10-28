@@ -42,7 +42,7 @@ CREATE TABLE reporting.giveup_trades (
     GIVEUP_ID            INT            NOT NULL,   -- rule that matched
     GIVEUP_LOGIN         INT            NOT NULL,   -- XCORE_GIVEUPS.TARGET: coverage login the copy goes to
     WITH_MARKUP          TINYINT        NOT NULL,
-    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- leg FILLPRICE2 when WITH_MARKUP = 1, FILLPRICE1 when 0
+    GIVEUP_PRICE         DECIMAL(18,6)  NOT NULL,   -- OrderFillPrice when WITH_MARKUP = 1, leg FILLPRICE1 when 0; rounded in the broker's favour
     PRIMARY KEY (GIVEUP_ID, ORDER_ID, LEG_ID),
     INDEX (GIVEUP_LOGIN)
 );
@@ -77,7 +77,8 @@ BEGIN
     DROP TEMPORARY TABLE IF EXISTS reporting.order_leg_mt4;
 
     CREATE TEMPORARY TABLE reporting.order_leg_mt4
-        SELECT ord.ORDER_ID, ord.CONNECTOR, ord.ACCOUNT, ord.SYMBOL, ord.SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
+        SELECT ord.ORDER_ID, ord.CONNECTOR, ord.ACCOUNT, ord.SYMBOL, sym.digits,
+               ord.SIDE, SUBID1, SUBID2, SUBID3, SUBID4,
                ord.FILLPRICE as OrderFillPrice,
                leg.LEG_ID, b_book, LP, Markup_Bid, Markup_Ask, leg.fillsize as LegFillSize, fillprice1, fillprice2,
                mt4.FILLPRICE as DonePrice,
@@ -85,7 +86,9 @@ BEGIN
                COALESCE(SUBID3, '') AS match_group,
                COALESCE(SUBID4, '') AS match_lead_source
         FROM xcore.xcore_order ord
-        join xcore.xcore_leg leg
+        left join reference.xcore_symbol_reference sym
+        on ord.symbol = sym.xcore_symbol
+        left join xcore.xcore_leg leg
         on ord.order_id = leg.order_id
         left join xcore.xcore_order_mt4 mt4
         on ord.ORDER_ID = mt4.ORDER_ID
@@ -120,8 +123,15 @@ BEGIN
                g_id AS GIVEUP_ID,
                g_target AS GIVEUP_LOGIN,
                g_markup AS WITH_MARKUP,
-               IF(g_markup = 1, t.fillprice2, t.fillprice1) AS GIVEUP_PRICE
-        FROM reporting.order_leg_mt4 t
+               -- Rounded to the symbol's digits in the broker's favour, as MT4
+               -- does: buys up (ceiling), sells down (floor). Prices are
+               -- positive, so TRUNCATE is the floor.
+               IF(t.SIDE = 'buy',
+                  TRUNCATE(t.raw_price, t.digits)
+                      + IF(t.raw_price > TRUNCATE(t.raw_price, t.digits), CAST(POW(10, -t.digits) AS DECIMAL(10,6)), 0),
+                  TRUNCATE(t.raw_price, t.digits)) AS GIVEUP_PRICE
+        FROM (SELECT o.*, IF(g_markup = 1, o.OrderFillPrice, o.fillprice1) AS raw_price
+              FROM reporting.order_leg_mt4 o) t
         WHERE (book_flag IS NULL OR t.b_book = book_flag)
           AND t.CONNECTOR         REGEXP conn_pos  AND (conn_neg  IS NULL OR t.CONNECTOR         NOT REGEXP conn_neg)
           AND t.ACCOUNT           REGEXP acct_pos  AND (acct_neg  IS NULL OR t.ACCOUNT           NOT REGEXP acct_neg)
