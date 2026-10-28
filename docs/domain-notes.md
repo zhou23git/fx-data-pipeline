@@ -413,6 +413,10 @@ made there, to confirm or correct:
   scenario: normal, sweep, reject then retry, all rejected, partial fill,
   hidden position, good slippage, B-booked metal, mini CFD, rejected close
   then retried.
+- It then writes one API order per scenario: fill, sweep, partial, all
+  rejected, adverse slip. They are spread across the four API accounts, with
+  no order MT4 row and NULL subids. Their profile comes from Josh's API
+  query, with lot limits from the Coverage group.
 
 Price flow. Each layer only knows its own markup: XCore knows nothing about
 MT4 group markups, and providers know nothing about XCore markups (not
@@ -521,6 +525,44 @@ which is why the simulation keeps all three.
     - `b_only` needs leg `B_BOOK` = 1, `a_only` needs 0, and `any` or `*`
       matches both.
     - A missing subid counts as '' so that `*` still matches it.
+
+### API trades (Josh, 2026-10-27)
+
+- API clients trade on the non-MT4 connectors, sending FIX straight to XCore.
+  Josh's query for their trading profile is the API version of the bridge.
+  It reads connector → connector account → pool providers per XCore symbol
+  → profile markup and B-book flag, for `conn.NAME <> 'trade/mt4'`.
+- In this project these are the four coverage connectors: `trade/uk_cov_100`,
+  `uk_cov_200`, `nz_cov_300` and `nz_cov_400`.
+  - Each has one account with the same name.
+  - Every one of those accounts is on pool 1 Bank_FX and profile 2 B2B.
+  - They are A-booked on all 19 XCore symbols.
+- An API trade has **no order MT4 row**.
+- Its legs are exactly the same as an MT4 client's.
+- Its order is the same as an MT4 client's, except that SUBID1-4 are all NULL.
+- An API trade **gets a login only at giveup**: giveup rules 5-8 match the
+  connector and account, and copy the trade, with markup, to coverage login
+  100, 200, 300 or 400.
+- **Size limits:** XCore has its own min, max and step settings per symbol,
+  independent of MT4's. In practice the two systems should be set the same.
+  Hidden exposure comes from getting them wrong: a fill size that one system
+  rounds and the other doesn't. The simulation reuses the MT4 limits for API
+  trades, taken from the Coverage group, where the giveup logins live.
+  - FX and metals: min 0.01 lots, max 100, step 0.01.
+  - CFD: min 1, max 100, step 1.
+  - These match B2B. Lots are converted to XCore units the same way as for
+    MT4 trades.
+- **No open or close in XCore:** an order is just an order. An API client's
+  trades are plain buys and sells. How giveups land on MT4 tickets comes
+  later.
+- **Execution:** API clients can be rejected, partly filled and slipped,
+  just like MT4 clients.
+  - Fill size 0 means rejected.
+  - XCore has retry settings, but they aren't simulated: an API order that
+    is rejected or partly filled stays that way.
+- **Volume:** the API clients are B2B, usually brokers themselves, and they
+  trade a lot. API (B2B) volume should be 40-50% of total daily volume; the
+  rest comes from the MT4 direct accounts.
 
 ### Config history
 

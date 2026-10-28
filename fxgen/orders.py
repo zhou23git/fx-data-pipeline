@@ -3,10 +3,11 @@
   python -m fxgen.orders sample --date 2026-10-26 [--replace]
 
 sample writes one showcase set per scenario in SAMPLE (open and, if filled,
-close), so every behaviour can be checked by eye. Rules are in
-docs/domain-notes.md, "Execution tables". Tradeable logins, symbols, pools,
-providers, markups and B-book come from Josh's query over the bridge output
-(reference.connector_account_logins); run the bridge first.
+close), so every behaviour can be checked by eye, then one order per scenario
+in API_SAMPLE. Rules are in docs/domain-notes.md, "Execution tables" and "API
+trades". Tradeable logins, symbols, pools, providers, markups and B-book come
+from Josh's query over the bridge output (reference.connector_account_logins);
+run the bridge first. API clients come from Josh's API profile query.
 """
 from __future__ import annotations
 
@@ -36,6 +37,31 @@ on mt4.profile_id = prof.profile_id
 and sym.XCORE_SYMBOL = prof.XCORE_SYMBOL
 """
 
+# Josh's API client profile query, plus the symbol details and the lot limits
+# API trades reuse: the Coverage group's, where the giveup logins live.
+API_SQL = """
+select conn.name as CONNECTOR, acct.name as CONNECTOR_ACCOUNT,
+       pool.PROVIDER_ID, pool.XCORE_SYMBOL,
+       prof.MARKUP_BID, prof.MARKUP_ASK, prof.B_BOOK,
+       sym.MT4_SYMBOL, sym.DIGITS, sym.POINT, sym.CONTRACTS_PER_LOT, sym.SCALING_MULTIPLIER,
+       gs.LOT_MIN, gs.LOT_MAX, gs.LOT_STEP
+from xcore.xcore_connectors conn
+left join xcore.xcore_connector_accounts acct
+on conn.CONNECTOR_ID = acct.CONNECTOR_ID
+left join xcore.xcore_liquidity_pool_providers pool
+on acct.POOL_ID = pool.POOL_ID
+left join xcore.xcore_profile_symbols prof
+on acct.PROFILE_ID = prof.PROFILE_ID
+and pool.xcore_symbol = prof.XCORE_SYMBOL
+join reference.symbol_reference sym
+on sym.XCORE_SYMBOL = pool.XCORE_SYMBOL
+join mt4.mt4_symbols ms
+on ms.SYMBOL = sym.MT4_SYMBOL
+join mt4.mt4_group_securities gs
+on gs.SERVER = 'trade/mt4' and gs.`GROUP` = 'Coverage' and gs.SEC_INDEX = ms.TYPE
+where conn.NAME <> 'trade/mt4'
+"""
+
 # Fake mids per XCore symbol, and half the raw spread in points.
 MIDS = {
     "EUR/USD": "1.08512", "GBP/USD": "1.27034", "AUD/USD": "0.65871", "NZD/USD": "0.59342",
@@ -63,6 +89,15 @@ SAMPLE = [
     dict(name="metal_bbook",    account="WL",     symbol="XAUUSD",        side="buy",  lots="1"),
     dict(name="mini_cfd",       account="Retail", symbol="NAS100",        side="buy",  lots="2"),
     dict(name="close_rejected", account="B2B",    symbol="EURJPY.b2b",    side="buy",  lots="5"),
+]
+
+# API clients: one plain XCore order each, no MT4 side. Symbols are XCore's.
+API_SAMPLE = [
+    dict(name="api_fill",    account="uk_cov_100", symbol="EUR/USD", side="buy",  lots="5"),
+    dict(name="sweep",       account="uk_cov_200", symbol="GBP/USD", side="sell", lots="30"),
+    dict(name="partial",     account="nz_cov_300", symbol="AUD/USD", side="buy",  lots="4"),
+    dict(name="reject_all",  account="nz_cov_400", symbol="USD/JPY", side="sell", lots="2"),
+    dict(name="slip",        account="uk_cov_100", symbol="XAU/USD", side="buy",  lots="1"),
 ]
 
 
@@ -134,7 +169,8 @@ def execute(row: dict, side: str, amount: Decimal, is_close: bool, mt4_open_ms: 
     point = Decimal(1).scaleb(-int(row["DIGITS"]))
     sign = 1 if side == "buy" else -1
     markup = row["MARKUP_ASK"] if side == "buy" else row["MARKUP_BID"]
-    gm_points = (row["SPREAD_DIFF"] // 2) if is_close else math.ceil(row["SPREAD_DIFF"] / 2)
+    spread_diff = row.get("SPREAD_DIFF", 0)   # API rows have no MT4 group markup
+    gm_points = (spread_diff // 2) if is_close else math.ceil(spread_diff / 2)
     levels = book(row, side, mid, point, rng)
     top = levels[0][0]
     ex = Execution(side, amount, top + markup, top + markup + sign * gm_points * point,
@@ -159,6 +195,8 @@ def execute(row: dict, side: str, amount: Decimal, is_close: bool, mt4_open_ms: 
             if fill:
                 if force == "good_slip":
                     slip = -1
+                elif force == "slip":
+                    slip = rng.randint(1, 2)
                 elif rng.random() < SLIP_CHANCE:
                     slip = rng.randint(1, 2) if rng.random() < ADVERSE_SHARE else -1
         fp1 = price + sign * slip * point if fill else Decimal(0)
@@ -209,6 +247,23 @@ def save(cur, row: dict, ex: Execution, ticket: int, is_close: bool) -> tuple[in
          row["GROUP"], row["LEAD_SOURCE"], ex.amount, ex.price, ex.fillsize, ex.fillprice, ex.open_ms, order_close))
     order_id = cur.lastrowid
     cur.execute("UPDATE xcore.XCORE_ORDER_MT4 SET ORDER_ID = %s WHERE CLORDID = %s", (order_id, clordid))
+    save_legs(cur, row, ex, order_id)
+    return order_id, size, mt4_close
+
+
+def save_api(cur, row: dict, ex: Execution) -> int:
+    """An API client's order: no order MT4 row and no subids; legs as for MT4."""
+    cur.execute(
+        "INSERT INTO xcore.XCORE_ORDER (SYMBOL, SIDE, CONNECTOR, ACCOUNT, AMOUNT, PRICE, FILLSIZE, FILLPRICE, "
+        "OPEN_MILLI, CLOSE_MILLI) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (row["XCORE_SYMBOL"], ex.side, row["CONNECTOR"], row["CONNECTOR_ACCOUNT"], ex.amount, ex.price,
+         ex.fillsize, ex.fillprice, ex.open_ms, ex.close_ms + 2))
+    order_id = cur.lastrowid
+    save_legs(cur, row, ex, order_id)
+    return order_id
+
+
+def save_legs(cur, row: dict, ex: Execution, order_id: int) -> None:
     for leg in ex.legs:
         cur.execute(
             "INSERT INTO xcore.XCORE_LEG (ORDER_ID, LEG_ID, B_BOOK, SYMBOL, SIDE, AMOUNT, PRICE, FILLSIZE, FILLPRICE1, "
@@ -216,7 +271,6 @@ def save(cur, row: dict, ex: Execution, ticket: int, is_close: bool) -> tuple[in
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (order_id, leg.leg_id, leg.b_book, row["XCORE_SYMBOL"], ex.side, leg.amount, leg.price, leg.fillsize,
              leg.fillprice1, leg.fillprice2, leg.lp, leg.markup_bid, leg.markup_ask, leg.open_ms, leg.close_ms))
-    return order_id, size, mt4_close
 
 
 def run_sample(cur, day: date, rng: random.Random) -> list[str]:
@@ -248,6 +302,19 @@ def run_sample(cur, day: date, rng: random.Random) -> list[str]:
             line += f", MT4 ticket {ticket} holds {held}, closed"
             ticket += 1
         report.append(line)
+
+    cur.execute(API_SQL)
+    cols = [c[0] for c in cur.description]
+    api_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    for j, s in enumerate(API_SAMPLE, start=len(SAMPLE)):
+        row = next(r for r in api_rows if r["CONNECTOR_ACCOUNT"] == s["account"] and r["XCORE_SYMBOL"] == s["symbol"])
+        mid = Decimal(MIDS[row["XCORE_SYMBOL"]])
+        t = int((start + timedelta(minutes=50 * j, seconds=rng.randint(0, 600))).timestamp() * 1000)
+        amount = lot_contracts(row, s["lots"])
+        ex = execute(row, s["side"], amount, False, t, mid, rng, s["name"])
+        oid = save_api(cur, row, ex)
+        report.append(f"api {s['name']:<11} {row['CONNECTOR_ACCOUNT']:<12} {row['XCORE_SYMBOL']:<14} {s['side']:<4} "
+                      f"{s['lots']:>4} lots: order {oid} filled {ex.fillsize}/{amount}")
     return report
 
 
