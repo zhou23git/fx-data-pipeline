@@ -19,8 +19,10 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
   7. Run the giveup procedure for the hour's orders.
   8. Book every giveup row onto its login's tickets (FIFO, partial closes).
 
-  End of day
-  9. On the 16:55 New York run, write the price snapshot (mt4.MT4_PRICES).
+  End of day (the 16:55 New York run, after its trades)
+  9. Load the day's swap rates (mt4.MT4_SYMBOLS).
+  10. Write the price snapshot (mt4.MT4_PRICES).
+  11. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
 
 Times are simulated: events fall at random seconds between :00 and :55.
 """
@@ -37,6 +39,7 @@ from fxgen.mt4trades import (DIRECT_OPEN_SQL, api_order_row, book_window, close_
                              open_trade)
 from fxgen.orders import API_SQL, MIDS, TRADABLE_SQL, lot_contracts
 from fxgen.prices import is_snapshot_run, snapshot_prices
+from fxgen.swaps import charge_swaps, set_swaps
 
 TRADE_CHANCE = 1 - 0.5 ** (1 / 24)   # per login per hour: about half the direct clients trade in a day
 TRADES_PER_LOGIN = (1, 3)
@@ -137,9 +140,13 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
     # 7-8. giveups for the hour, booked in order-time order
     log += ["giveup " + line for line in book_window(cur, hour, hour + timedelta(hours=1), rng)
             if not line.startswith("order ")]
-    # 9. end-of-day price snapshot on the 16:55 New York run
-    if is_snapshot_run(hour + timedelta(minutes=55)):
-        log += ["price  " + line for line in snapshot_prices(cur, hour + timedelta(minutes=55), rng)]
+    # 9-11. end of day, on the 16:55 New York run after that hour's trades: the day's swap rates,
+    # the price snapshot, then one day's swap on every open ticket
+    eod = hour + timedelta(minutes=55)
+    if is_snapshot_run(eod):
+        log += ["swap   " + line for line in set_swaps(cur, rng)]
+        log += ["price  " + line for line in snapshot_prices(cur, eod, rng)]
+        log += ["swap   " + line for line in charge_swaps(cur, eod)]
     log.append(f"direct {direct_usd:,.0f} USD, API {api_usd:,.0f} USD "
                f"({api_usd / (direct_usd + api_usd) * 100 if direct_usd + api_usd else 0:.0f}%)")
     return log

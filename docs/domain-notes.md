@@ -60,9 +60,10 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
   - Metals XAUUSD and XAGUSD (currency XAU / XAG, contract 100). CFDs USOIL
     and UKOIL (contract 10), NAS100 and SP500 (contract 1, mini). CFDs have
     currency USD.
-  - Swaps are in points (MT4 swap type "points"). `SWAP_LONG` and
-    `SWAP_SHORT` are set daily by a plugin, so the config leaves them NULL.
-    Only FX has swaps enabled.
+  - Swaps are a price delta (EURUSD -0.00003, not -3 points). `SWAP_LONG`
+    and `SWAP_SHORT` are set daily by a plugin, so the config leaves them
+    NULL. Only FX has swaps enabled. How they are made up is under "Swap
+    rates".
 - Entities: Equiti separated entities with login ranges and dedicated MT4
   servers, not with the group's `COMPANY` field. Here there is one server, and
   login ranges simulate the entities.
@@ -898,6 +899,46 @@ Josh didn't keep floating prices. For end of day he queried MT4 for prices at
   (`fxgen/prices.py`).
 - Prices are raw quotes, before any group `SPREAD_DIFF`. The plain, `.retail`
   and `.b2b` versions of a pair share one quote. **(assumed)**
+
+### Swap rates (Josh, 2026-10-28)
+
+**What a swap is.** In real (non-CFD) FX, a swap is a trade after end of
+day that rolls the settlement date to the next business day FX is open. For
+example, a trade left open on Monday night with Wednesday settlement (T+2)
+is closed and reopened for Thursday. In theory the price difference is the
+interest-rate differential of the two currencies. In practice banks can play
+games with it at the broker's expense.
+
+**Here every symbol is a CFD, FX included.** The broker has to load swaps
+before end of day, but the LP only charges the next day. The LP's estimate
+isn't promised and is sometimes far off.
+
+**The simulation keeps it simple** (`fxgen/swaps.py`). This is run on the
+16:55 New York run, before the price snapshot.
+- For each symbol with `SWAP_ENABLE` = 1, a random 1-5 point differential
+  is drawn and stored as a price: `SWAP_LONG` = -n x `POINT`, `SWAP_SHORT`
+  = +n x `POINT`.
+- Buys always pay and sells always get paid. For EURUSD at 3 points, that's
+  -0.00003 / +0.00003, so a 1M position gets -30 / +30 a day.
+- Symbols with swaps disabled (metals, CFDs) keep NULL.
+- The plain, `.retail` and `.b2b` versions of a pair share one draw.
+  **(assumed)**
+
+**End of day.** The 16:55 New York run is the simulated end of day. After
+that hour's trades, it runs three steps in order:
+1. Load the day's swap rates.
+2. Write the price snapshot.
+3. Add one day's swap to every ticket still open: CMD 0/1 on a
+   swap-enabled symbol.
+
+The swap is contracts x `SWAP_LONG` (buys) or `SWAP_SHORT` (sells), a
+quote-currency amount. It is converted to the deposit currency at the
+snapshot mid, the same way as `PROFIT`, and added to `SWAPS`. Giveup logins'
+tickets are charged too.
+
+These are not simulated yet:
+- triple swaps on Wednesdays;
+- weekend and holiday rollovers (they wait for Josh's EOD file).
 
 ### Config history
 

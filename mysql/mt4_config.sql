@@ -41,7 +41,7 @@ CREATE TABLE MT4_SYMBOLS (
     TICK_SIZE      DOUBLE      NOT NULL,      -- equals POINT
     TICK_VALUE     DOUBLE      NOT NULL,      -- TICK_VALUE / TICK_SIZE < 1 marks a mini contract
     SWAP_ENABLE    TINYINT     NOT NULL DEFAULT 1,
-    SWAP_LONG      DOUBLE      NULL,          -- points; set daily by a plugin
+    SWAP_LONG      DOUBLE      NULL,          -- price delta (EURUSD -0.00003); set daily by a plugin
     SWAP_SHORT     DOUBLE      NULL,
     PRIMARY KEY (SERVER, SYMBOL)
 );
