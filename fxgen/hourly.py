@@ -19,6 +19,9 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
   7. Run the giveup procedure for the hour's orders.
   8. Book every giveup row onto its login's tickets (FIFO, partial closes).
 
+  End of day
+  9. On the 16:55 New York run, write the price snapshot (mt4.MT4_PRICES).
+
 Times are simulated: events fall at random seconds between :00 and :55.
 """
 from __future__ import annotations
@@ -33,6 +36,7 @@ from fxgen.db import connect
 from fxgen.mt4trades import (DIRECT_OPEN_SQL, api_order_row, book_window, close_by_hedge, close_trade,
                              open_trade)
 from fxgen.orders import API_SQL, MIDS, TRADABLE_SQL, lot_contracts
+from fxgen.prices import is_snapshot_run, snapshot_prices
 
 TRADE_CHANCE = 1 - 0.5 ** (1 / 24)   # per login per hour: about half the direct clients trade in a day
 TRADES_PER_LOGIN = (1, 3)
@@ -133,6 +137,9 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
     # 7-8. giveups for the hour, booked in order-time order
     log += ["giveup " + line for line in book_window(cur, hour, hour + timedelta(hours=1), rng)
             if not line.startswith("order ")]
+    # 9. end-of-day price snapshot on the 16:55 New York run
+    if is_snapshot_run(hour + timedelta(minutes=55)):
+        log += ["price  " + line for line in snapshot_prices(cur, hour + timedelta(minutes=55), rng)]
     log.append(f"direct {direct_usd:,.0f} USD, API {api_usd:,.0f} USD "
                f"({api_usd / (direct_usd + api_usd) * 100 if direct_usd + api_usd else 0:.0f}%)")
     return log

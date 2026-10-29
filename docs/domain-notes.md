@@ -856,7 +856,9 @@ are simulated: events fall between :00 and :55.
   zone (Pacific on his PC), so the procedure uses `TIMESTAMPADD`. A run
   rebuilds only its window's rows.
 - **Open-position queries.** Direct clients and giveup logins are fetched
-  separately. Josh will provide both queries.
+  separately. Josh reviewed both placeholder queries and kept them: the
+  direct query only takes logins in the bridge config, and that alone keeps
+  giveup logins (and so API flow) out of close by hedge.
 
 **Activity levels (Josh's Equiti experience).**
 - About 50% of retail clients traded every day.
@@ -881,6 +883,21 @@ logins thousands of tickets and long chains of tiny partial closes (a 3-lot
 ticket closed 0.01 at a time). Josh says the real accounts looked exactly
 like that. Matching them back to orders by brute force was slow, and he never
 solved it; optimising that matching is a topic for later.
+
+### End-of-day prices (Josh, 2026-10-28)
+
+Josh didn't keep floating prices. For end of day he queried MT4 for prices at
+16:59:59 New York time and used that single snapshot.
+
+- `MT4_PRICES` (`mysql/mt4_prices.sql`) is its own table, not part of the
+  symbol. It has one row per symbol, overwritten on each update, so there is
+  no history. Josh's fields: symbol, bid, ask, and the last update time in
+  GMT (`MODIFY_TIME`).
+- The hourly process writes fake prices on its 16:55 New York run:
+  20:55 GMT while the US is on daylight time, 21:55 GMT after 2026-11-01
+  (`fxgen/prices.py`).
+- Prices are raw quotes, before any group `SPREAD_DIFF`. The plain, `.retail`
+  and `.b2b` versions of a pair share one quote. **(assumed)**
 
 ### Config history
 
