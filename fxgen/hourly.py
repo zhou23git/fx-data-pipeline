@@ -9,20 +9,22 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
      trading conditions.
   2. Fetch open tickets and fully close a random subset (order MT4, XCore
      order and legs, ticket closed).
-  3. Open trades for a random set of bridge logins.
-  4. Fetch open tickets again and close some by hedge, at :55.
+  3. Deposits and withdrawals for a random few clients.
+  4. Open trades for a random set of bridge logins. A client with no
+     deposit yet makes a first deposit just before its first trade.
+  5. Fetch open tickets again and close some by hedge, at :55.
 
   API clients
-  5. Run the API account reference.
-  6. Place API orders (order and legs from the reference's markup, book and
+  6. Run the API account reference.
+  7. Place API orders (order and legs from the reference's markup, book and
      provider) until they are 40-50% of the hour's volume.
-  7. Run the giveup procedure for the hour's orders.
-  8. Book every giveup row onto its login's tickets (FIFO, partial closes).
+  8. Run the giveup procedure for the hour's orders.
+  9. Book every giveup row onto its login's tickets (FIFO, partial closes).
 
   End of day (the 16:55 New York run, after its trades)
-  9. Load the day's swap rates (mt4.MT4_SYMBOLS).
-  10. Write the price snapshot (mt4.MT4_PRICES).
-  11. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
+  10. Load the day's swap rates (mt4.MT4_SYMBOLS).
+  11. Write the price snapshot (mt4.MT4_PRICES).
+  12. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
 
 Times are simulated: events fall at random seconds between :00 and :55.
 """
@@ -35,8 +37,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fxgen.db import connect
-from fxgen.mt4trades import (DIRECT_OPEN_SQL, api_order_row, book_window, close_by_hedge, close_trade,
-                             open_trade)
+from fxgen.mt4trades import (DIRECT_OPEN_SQL, OPEN_DATE, api_order_row, balance, book_window, close_by_hedge,
+                             close_trade, open_trade, rate)
 from fxgen.orders import API_SQL, MIDS, TRADABLE_SQL, lot_contracts
 from fxgen.prices import is_snapshot_run, snapshot_prices
 from fxgen.swaps import charge_swaps, set_swaps
@@ -49,6 +51,13 @@ API_SHARE = (0.40, 0.50)             # API share of the hour's volume (USD notio
 DIRECT_LOTS = ["0.01", "0.05", "0.1", "0.2", "0.5", "1", "2", "3", "5"]
 DIRECT_WEIGHTS = [10, 10, 20, 15, 15, 15, 8, 4, 3]
 API_LOTS = ["1", "2", "3", "5", "10", "15", "20", "30"]
+DEPOSIT_CHANCE = 1 / (24 * 14)       # per client per hour: a top-up about every two weeks
+WITHDRAW_CHANCE = 1 / (24 * 30)      # per client per hour: a withdrawal about once a month
+WITHDRAW_SHARE = (0.1, 0.5)          # of the client's balance
+DEPOSIT_USD = {"B2B": ["50000", "100000", "250000", "500000"]}   # by group; others use the default
+DEPOSIT_USD_DEFAULT = ["100", "250", "500", "1000", "2000", "5000", "10000"]
+DEPOSIT_WEIGHTS = {"B2B": [4, 3, 2, 1]}
+DEPOSIT_WEIGHTS_DEFAULT = [15, 20, 25, 20, 10, 7, 3]
 
 
 def usd_notional(xcore_symbol: str, contracts: Decimal) -> Decimal:
@@ -71,6 +80,23 @@ def pick_lots(row: dict, choices: list[str], weights: list[int] | None, rng: ran
 
 def at(hour: datetime, rng: random.Random) -> datetime:
     return hour + timedelta(seconds=rng.randint(0, 55 * 60 - 1))
+
+
+def deposit_amount(group: str, currency: str, rng: random.Random) -> Decimal:
+    """A round deposit in the client's currency, drawn in USD by group."""
+    usd = Decimal(rng.choices(DEPOSIT_USD.get(group, DEPOSIT_USD_DEFAULT),
+                              DEPOSIT_WEIGHTS.get(group, DEPOSIT_WEIGHTS_DEFAULT))[0])
+    step = Decimal(1000 if currency == "JPY" else 10)
+    return max(step, (usd * rate("USD", currency, "", Decimal(0)) / step).to_integral_value() * step)
+
+
+def account_balance(cur, login: int, when: datetime) -> Decimal:
+    """Balance at `when`: balance rows plus closed tickets' profit, commission and swaps."""
+    done = when.strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("SELECT COALESCE(SUM(PROFIT + COMMISSION + SWAPS), 0) FROM mt4.MT4_TRADES "
+                "WHERE SERVER = 'trade/mt4' AND LOGIN = %s AND ((CMD = 6 AND OPEN_TIME <= %s) "
+                "OR (CMD IN (0, 1) AND CLOSE_TIME <> %s AND CLOSE_TIME <= %s))", (login, done, OPEN_DATE, done))
+    return Decimal(str(cur.fetchone()[0]))
 
 
 def rows_of(cur) -> list[dict]:
@@ -99,19 +125,42 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
         direct_usd += usd_notional(row["XCORE_SYMBOL"], lot_contracts(row, lots))
         log.append("close  " + line)
 
-    # 3. new trades
+    # 3. deposits and withdrawals by clients (House trading logins are funded internally)
+    clients = {login: rows[0] for login, rows in by_login.items() if rows[0]["GROUP"] != "House"}
+    cur.execute("SELECT DISTINCT LOGIN FROM mt4.MT4_TRADES WHERE SERVER = 'trade/mt4' AND CMD = 6")
+    funded = {login for (login,) in cur.fetchall()}
+    moves = []
+    for login, row in clients.items():
+        if login in funded and rng.random() < DEPOSIT_CHANCE:
+            moves.append((at(hour, rng), login, deposit_amount(row["GROUP"], row["ACCOUNT_CURRENCY"], rng)))
+        if login in funded and rng.random() < WITHDRAW_CHANCE:
+            moves.append((at(hour, rng), login, None))
+    for when, login, amount in sorted(moves, key=lambda m: m[0]):
+        if amount is None:
+            share = Decimal(str(rng.uniform(*WITHDRAW_SHARE)))
+            amount = -(account_balance(cur, login, when) * share).quantize(Decimal(1))
+            if amount >= 0:
+                continue
+        log.append("cash   " + balance(cur, login, str(amount), when, ""))
+
+    # 4. new trades; a client's first trade comes after its first deposit
     events = []
     for login, rows in by_login.items():
         if rng.random() < TRADE_CHANCE:
             for _ in range(rng.randint(*TRADES_PER_LOGIN)):
                 events.append((at(hour, rng), rng.choice(rows)))
     for when, row in sorted(events, key=lambda e: e[0]):
+        if row["LOGIN"] in clients and row["LOGIN"] not in funded:
+            first = hour + timedelta(seconds=rng.randint(0, int((when - hour).total_seconds())))
+            amount = deposit_amount(row["GROUP"], row["ACCOUNT_CURRENCY"], rng)
+            log.append("cash   " + balance(cur, row["LOGIN"], str(amount), first, ""))
+            funded.add(row["LOGIN"])
         lots = pick_lots(row, DIRECT_LOTS, DIRECT_WEIGHTS, rng)
         log.append("open   " + open_trade(cur, row["LOGIN"], row["SYMBOL"], rng.choice(("buy", "sell")), str(lots),
                                          when, rng))
         direct_usd += usd_notional(row["XCORE_SYMBOL"], lot_contracts(row, lots))
 
-    # 4. close by hedge at :55
+    # 5. close by hedge at :55
     cur.execute(DIRECT_OPEN_SQL)
     positions = defaultdict(list)
     for t in rows_of(cur):
@@ -121,7 +170,7 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
             log += ["hedge  " + line for line in
                     close_by_hedge(cur, [t["TICKET"] for t in ts], hour + timedelta(minutes=55), rng)]
 
-    # 5-6. API orders up to their share of the hour's volume
+    # 6-7. API orders up to their share of the hour's volume
     cur.execute(API_SQL)
     api_rows = [r for r in rows_of(cur) if r["PROVIDER_ID"] is not None]
     share = Decimal(str(rng.uniform(*API_SHARE)))
@@ -137,10 +186,10 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
     for when, row, lots in sorted(orders, key=lambda o: o[0]):
         log.append("api    " + api_order_row(cur, row, rng.choice(("buy", "sell")), lots, when, rng)[0])
 
-    # 7-8. giveups for the hour, booked in order-time order
+    # 8-9. giveups for the hour, booked in order-time order
     log += ["giveup " + line for line in book_window(cur, hour, hour + timedelta(hours=1), rng)
             if not line.startswith("order ")]
-    # 9-11. end of day, on the 16:55 New York run after that hour's trades: the day's swap rates,
+    # 10-12. end of day, on the 16:55 New York run after that hour's trades: the day's swap rates,
     # the price snapshot, then one day's swap on every open ticket
     eod = hour + timedelta(minutes=55)
     if is_snapshot_run(eod):

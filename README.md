@@ -19,7 +19,7 @@ and dbt on realistic, messy sources.
 | `mysql/xcore_trades.sql`: XCore order, order MT4 and leg tables | Ready |
 | `fxgen/orders.py`: simulates MT4 -> XCore executions; `sample` writes 10 showcase trade sets | First version, under review |
 | `fxgen/mt4trades.py`: MT4 tickets: open, close, close by hedge, giveup booking, deposits and withdrawals | First version |
-| `fxgen/hourly.py`: the hourly process, one simulated hour of direct and API trading per run | First version; end of day on the 16:55 New York run: swap rates, price snapshot, swaps charged to open tickets |
+| `fxgen/hourly.py`: the hourly process, one simulated hour of direct and API trading per run | First version; client deposits and withdrawals; end of day on the 16:55 New York run: swap rates, price snapshot, swaps charged to open tickets |
 | `fxgen/prices.py`: fake end-of-day prices in MT4_PRICES | First version |
 | `fxgen/swaps.py`: daily swap rates in MT4_SYMBOLS (buys pay, sells get paid), charged to open tickets at end of day | First version |
 | `fxgen/profiles.py`: sets profile markup and pool per symbol, plus random daily markup, logging each change | Ready |

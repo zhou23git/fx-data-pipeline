@@ -867,6 +867,24 @@ are simulated: events fall between :00 and :55.
 - B2B API volume is huge: 40-50% of the day's volume.
 - B2B direct clients traded like active retail clients.
 
+**Deposits and withdrawals in the hourly run.** These are simulation
+choices, not Josh's rules. **(assumed)**
+- They run after the random closes and before new trades.
+- Only clients get them. House trading logins 20 and 50 are funded
+  internally.
+- **First deposit.** A client with no deposit yet makes its first one at a
+  random time before its first trade, so a ticket never comes before the
+  account is funded.
+- **Top-ups.** About once every two weeks per client.
+- **Withdrawals.** About once a month per client, of 10-50% of the balance:
+  balance rows plus closed tickets' profit, commission and swaps.
+- **Amounts.** These are drawn in USD and converted to the deposit currency,
+  rounded to 10 (or 1,000 JPY):
+  - Retail and White Label: 100-10,000 USD, mostly 250-1,000.
+  - B2B: 50,000-500,000 USD.
+- The kept 2026-10-28 day predates this, so its clients traded unfunded.
+  They get a first deposit at their next trade.
+
 **Simulation settings.** These are in `fxgen/hourly.py`.
 - Each client login trades in an hour with probability 1 - 0.5^(1/24), one
   to three trades.
