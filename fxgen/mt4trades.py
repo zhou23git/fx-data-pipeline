@@ -65,10 +65,16 @@ def close_quote(row: dict, side: str, mid: Decimal) -> Decimal:
 
 
 def profit(side: str, contracts: Decimal, open_price: Decimal, close_price: Decimal,
-           conv_rate2: Decimal, currency: str) -> Decimal:
-    """P/L in deposit currency: quote-currency P/L x (CONV_RATE2 / close price)."""
+           conv_rate2: Decimal, currency: str, base: str, quote: str) -> Decimal:
+    """P/L in deposit currency. The price move x contracts is a quote-currency
+    amount. CONV_RATE2 converts base -> deposit, so for a currency pair the
+    amount is first turned into base currency by dividing by the close price.
+    A CFD is priced in its own currency (base = quote = USD), so its P/L is
+    already in base currency and is not divided. `contracts` includes the
+    mini-contract scaling (TICK_VALUE / TICK_SIZE)."""
     sign = 1 if side == "buy" else -1
-    return money(sign * (close_price - open_price) * contracts * conv_rate2 / close_price, currency)
+    pl = sign * (close_price - open_price) * contracts
+    return money(pl * conv_rate2 if base == quote else pl * conv_rate2 / close_price, currency)
 
 
 def next_ticket(cur) -> int:
@@ -102,7 +108,7 @@ def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetim
     commission = money(-Decimal(row["COMM_BASE"]) * volume / 100 * dec(contract_size) * conv1 / 100_000, deposit)
     close_price = close_quote(row, side, mid)
     conv2 = rate(base, deposit, quote, close_price)
-    pl = profit(side, size, open_price, close_price, conv2, deposit)
+    pl = profit(side, size, open_price, close_price, conv2, deposit, base, quote)
     open_time = datetime.fromtimestamp(fill_ms // 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
@@ -116,7 +122,7 @@ def open_trade(cur, login: int, symbol: str, side: str, lots: str, when: datetim
 
 TICKET_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD, t.VOLUME, t.OPEN_TIME, t.OPEN_PRICE, t.CLOSE_TIME, "
               "t.CLOSE_PRICE, t.CONV_RATE1, t.CONV_RATE2, t.COMMISSION, t.COMMISSION_AGENT, t.SWAPS, t.DIGITS, "
-              "u.CURRENCY AS DEPOSIT, s.CURRENCY AS BASE, s.CONTRACT_SIZE, r.XCORE_SYMBOL "
+              "u.CURRENCY AS DEPOSIT, s.CURRENCY AS BASE, s.CONTRACT_SIZE, r.SCALING_MULTIPLIER, r.XCORE_SYMBOL "
               "FROM mt4.MT4_TRADES t "
               "JOIN mt4.MT4_USERS u ON u.SERVER = t.SERVER AND u.LOGIN = t.LOGIN "
               "JOIN mt4.MT4_SYMBOLS s ON s.SERVER = t.SERVER AND s.SYMBOL = t.SYMBOL "
@@ -138,7 +144,8 @@ def load_ticket(cur, ticket: int) -> dict:
 
 
 def contracts(t: dict, volume: int) -> Decimal:
-    return Decimal(volume) / 100 * dec(t["CONTRACT_SIZE"])
+    """Contracts that move P/L: lots x contract size x mini-contract scaling."""
+    return Decimal(volume) / 100 * dec(t["CONTRACT_SIZE"]) * dec(t["SCALING_MULTIPLIER"])
 
 
 def partial_close(cur, t: dict, keep: int, comment: str) -> dict:
@@ -156,7 +163,8 @@ def partial_close(cur, t: dict, keep: int, comment: str) -> dict:
     t["VOLUME"] = keep
     side = "buy" if t["CMD"] == 0 else "sell"
     child_pl = profit(side, contracts(child, rest), child["OPEN_PRICE"], child["CLOSE_PRICE"],
-                      rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], child["CLOSE_PRICE"]), child["DEPOSIT"])
+                      rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], child["CLOSE_PRICE"]), child["DEPOSIT"],
+                      t["BASE"], t["QUOTE"])
     cur.execute(
         "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
         "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "
@@ -199,7 +207,8 @@ def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) 
         # ticket 1 closes at ticket 2's open price and takes over its costs
         side = "buy" if main["CMD"] == 0 else "sell"
         close_price = other["OPEN_PRICE"]
-        pl = profit(side, contracts(main, main["VOLUME"]), main["OPEN_PRICE"], close_price, conv2, main["DEPOSIT"])
+        pl = profit(side, contracts(main, main["VOLUME"]), main["OPEN_PRICE"], close_price, conv2, main["DEPOSIT"],
+                    main["BASE"], main["QUOTE"])
         cur.execute(
             "UPDATE mt4.MT4_TRADES SET VOLUME = %s, CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, "
             "COMMISSION = %s, COMMISSION_AGENT = %s, SWAPS = %s, PROFIT = %s "
@@ -262,7 +271,8 @@ def close_trade(cur, ticket: int, when: datetime, rng: random.Random) -> tuple[s
     conv2 = rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], close_price)
     commission = t["COMMISSION"] + money(
         -Decimal(row["COMM_BASE"]) * t["VOLUME"] / 100 * dec(t["CONTRACT_SIZE"]) * conv2 / 100_000, t["DEPOSIT"])
-    pl = profit(side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], close_price, conv2, t["DEPOSIT"])
+    pl = profit(side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], close_price, conv2, t["DEPOSIT"], t["BASE"],
+                t["QUOTE"])
     closed = datetime.fromtimestamp(fill_ms // 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute("UPDATE mt4.MT4_TRADES SET CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, COMMISSION = %s, "
                 "PROFIT = %s WHERE SERVER = 'trade/mt4' AND TICKET = %s",
@@ -308,7 +318,7 @@ def book_leg(cur, g: dict, when: datetime, rng: random.Random) -> list[str]:
             log.append(f"  ticket {t['TICKET']} partially closed: {child['VOLUME'] / 100:g} lots to child "
                        f"{child['TICKET']}")
         t_side = "buy" if t["CMD"] == 0 else "sell"
-        pl = profit(t_side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], price, conv2, deposit)
+        pl = profit(t_side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], price, conv2, deposit, sym["BASE"], quote)
         commission = t["COMMISSION"] + money(comm_rate * t["VOLUME"] * conv2, deposit)
         cur.execute(
             "UPDATE mt4.MT4_TRADES SET VOLUME = %s, CLOSE_TIME = %s, CLOSE_PRICE = %s, CONV_RATE2 = %s, "
@@ -323,8 +333,9 @@ def book_leg(cur, g: dict, when: datetime, rng: random.Random) -> list[str]:
         mid = (Decimal(MIDS[g["SYMBOL"]]) * dec(1 + rng.gauss(0, 0.0005))).quantize(Decimal(1).scaleb(-sym["DIGITS"]))
         floating = close_quote(dict(DIGITS=sym["DIGITS"], XCORE_SYMBOL=g["SYMBOL"], SPREAD_DIFF=0,
                                     MARKUP_BID=0, MARKUP_ASK=0), side, mid)
-        size = Decimal(remaining) / 100 * dec(sym["CONTRACT_SIZE"])
-        pl = profit(side, size, price, floating, rate(sym["BASE"], deposit, quote, floating), deposit)
+        size = Decimal(remaining) / 100 * dec(sym["CONTRACT_SIZE"]) * dec(sym["SCALING_MULTIPLIER"])
+        pl = profit(side, size, price, floating, rate(sym["BASE"], deposit, quote, floating), deposit, sym["BASE"],
+                    quote)
         cur.execute(
             "INSERT INTO mt4.MT4_TRADES (SERVER, TICKET, LOGIN, SYMBOL, DIGITS, CMD, VOLUME, OPEN_TIME, OPEN_PRICE, "
             "CLOSE_TIME, CLOSE_PRICE, CONV_RATE1, CONV_RATE2, COMMISSION, COMMISSION_AGENT, SWAPS, PROFIT, COMMENT) "

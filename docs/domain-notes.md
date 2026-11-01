@@ -52,6 +52,13 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
   - P/L = lots x `CONTRACT_SIZE` x (close or current price - open price) x
     conversion rate x (`TICK_VALUE` / `TICK_SIZE`). Sells use
     open - close.
+  - The price move is in the quote currency. For a currency pair or metal,
+    `CONV_RATE` converts base -> deposit, so the simulator first divides by
+    the price (quote -> base). CFDs are priced in their own currency
+    (`CURRENCY` USD, quoted in USD), so their P/L is not divided by the
+    price.
+  - Before 2026-10-31 the simulator divided CFD P/L by the price and
+    skipped the mini scaling. Stored CFD profits were recalculated.
 - Symbols (`MT4_SYMBOLS`), cut down by Josh to description, currency, type,
   digits, point, contract size, tick size and value, and swaps:
   - 13 FX pairs, each in three versions: plain (`EURUSD`), `.retail` and
