@@ -58,8 +58,9 @@ ORDER BY t.TICKET
 """
 
 
-def charge_swaps(cur, when: datetime) -> list[str]:
-    """Add one day's swap to every open ticket opened by `when`."""
+def charge_swaps(cur, when: datetime, mids: dict | None = None) -> list[str]:
+    """Add one day's swap to every open ticket opened by `when`, converted at
+    `mids` (the end-of-day snapshot) when given."""
     cur.execute(OPEN_SWAP_SQL, (OPEN_DATE, when.strftime("%Y-%m-%d %H:%M:%S")))
     cols = [c[0] for c in cur.description]
     log = []
@@ -68,7 +69,7 @@ def charge_swaps(cur, when: datetime) -> list[str]:
         quote = t["XCORE_SYMBOL"].split("/")[1]
         delta = Decimal(str(t["SWAP_LONG"] if t["CMD"] == 0 else t["SWAP_SHORT"]))
         contracts = Decimal(t["VOLUME"]) / 100 * Decimal(str(t["CONTRACT_SIZE"]))
-        amount = money(contracts * delta * rate(t["BASE"], t["DEPOSIT"], quote, mid) / mid, t["DEPOSIT"])
+        amount = money(contracts * delta * rate(t["BASE"], t["DEPOSIT"], quote, mid, mids) / mid, t["DEPOSIT"])
         cur.execute("UPDATE mt4.MT4_TRADES SET SWAPS = SWAPS + %s WHERE SERVER = 'trade/mt4' AND TICKET = %s",
                     (amount, t["TICKET"]))
         log.append(f"ticket {t['TICKET']}: swap {amount} {t['DEPOSIT']}")

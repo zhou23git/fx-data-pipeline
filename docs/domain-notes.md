@@ -925,6 +925,59 @@ Josh didn't keep floating prices. For end of day he queried MT4 for prices at
 - Prices are raw quotes, before any group `SPREAD_DIFF`. The plain, `.retail`
   and `.b2b` versions of a pair share one quote. **(assumed)**
 
+### Client statements (Josh, 2026-10-31)
+
+MT4 sends each client a daily statement and also keeps the file in a folder.
+Here only the folder is simulated: `out/statements/<trading day>/<login>.csv`.
+
+**Why they matter.** The statements are the source of truth for checking two
+of Josh's queries:
+- Reverse-engineering open positions at end of day from `CLOSE_TIME`,
+  including his close-by-hedge close-time fix.
+- Working out end-of-day conversion rates from open tickets' floating profit.
+
+**Contents (Josh's layout).** These are written at end of day, after that
+hour's trades, in this order:
+1. Header: login, statement date (yyyy-mm-dd), name, currency.
+2. Closed tickets: buys and sells closed that day. Commission, swaps and
+   profit are as stored in `MT4_TRADES`.
+3. Open tickets at the close.
+4. Summary:
+
+| Line | Definition |
+|---|---|
+| `PREVIOUS_BALANCE` | The new balance of the login's last statement |
+| `DEPOSITS` | The day's deposits and withdrawals (CMD 6), net |
+| `PROFIT_CLOSED` | Commission + swaps + profit of the closed tickets |
+| `NEW_BALANCE` | Previous balance + deposits + profit_closed |
+| `PROFIT_OPEN` | Commission + swaps + profit of the open tickets |
+| `PL` | New balance + profit_open |
+
+**Balances carry from statement to statement.** The previous balance is
+carried from the last statement, not recalculated from tickets. A login's
+first statement has no earlier one, so its previous balance comes from its
+transactions before that day **(assumed)**. If a closed ticket changes
+after its statement, the carried balance and a recalculation will disagree.
+
+**Why the timing matters.** A statement is only true when written at end of
+day, because tickets change in place afterwards. There is one file per login
+with an open ticket at the close or any transaction that day.
+
+**Floating values at end of day.** Before the statements are written, every
+open ticket's `CLOSE_PRICE` and `PROFIT` are floated to the price snapshot:
+- the close price is the opposite side of the book, with the login's bridge
+  markup and group spread;
+- conversion uses the snapshot rates.
+
+So the floating profit carries that day's conversion rate. `CONV_RATE2` stays
+0 while a ticket is open.
+
+**MT4_DAILY** (`mysql/mt4_daily.sql`). This is the summary of each
+statement, with no ticket list. It has one row per login per statement:
+`LOGIN`, `STATEMENT_DATE` and the six summary lines, written in the same
+step as the file. Name and currency are left out, because they are in
+`MT4_USERS` **(assumed)**.
+
 ### Swap rates (Josh, 2026-10-28)
 
 **What a swap is.** In real (non-CFD) FX, a swap is a trade after end of

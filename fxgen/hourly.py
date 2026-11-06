@@ -24,7 +24,9 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
   End of day (the 16:55 New York run, after its trades)
   10. Load the day's swap rates (mt4.MT4_SYMBOLS).
   11. Write the price snapshot (mt4.MT4_PRICES).
-  12. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
+  12. Mark every open ticket's CLOSE_PRICE and PROFIT to the snapshot.
+  13. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
+  14. Write each active login's statement CSV (out/statements/<day>/).
 
 Times are simulated: events fall at random seconds between :00 and :55.
 """
@@ -34,13 +36,15 @@ import argparse
 import random
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from fxgen.db import connect
 from fxgen.mt4trades import (DIRECT_OPEN_SQL, OPEN_DATE, api_order_row, balance, book_window, close_by_hedge,
-                             close_trade, open_trade, rate)
+                             close_trade, mark_open_tickets, open_trade, rate)
 from fxgen.orders import API_SQL, MIDS, TRADABLE_SQL, lot_contracts
-from fxgen.prices import is_snapshot_run, snapshot_prices
+from fxgen.prices import is_snapshot_run, snapshot_mids, snapshot_prices
+from fxgen.statements import write_statements
 from fxgen.swaps import charge_swaps, set_swaps
 
 TRADE_CHANCE = 1 - 0.5 ** (1 / 24)   # per login per hour: about half the direct clients trade in a day
@@ -195,7 +199,11 @@ def run_hour(cur, hour: datetime, rng: random.Random) -> list[str]:
     if is_snapshot_run(eod):
         log += ["swap   " + line for line in set_swaps(cur, rng)]
         log += ["price  " + line for line in snapshot_prices(cur, eod, rng)]
-        log += ["swap   " + line for line in charge_swaps(cur, eod)]
+        mids = snapshot_mids(cur)
+        log += ["mark   " + line for line in mark_open_tickets(cur, mids)]
+        log += ["swap   " + line for line in charge_swaps(cur, eod, mids)]
+        day = eod.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York")).date()
+        log += ["stmt   " + line for line in write_statements(cur, day)]
     log.append(f"direct {direct_usd:,.0f} USD, API {api_usd:,.0f} USD "
                f"({api_usd / (direct_usd + api_usd) * 100 if direct_usd + api_usd else 0:.0f}%)")
     return log

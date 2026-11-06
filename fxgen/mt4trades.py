@@ -36,21 +36,24 @@ def money(amount: Decimal, currency: str) -> Decimal:
     return amount.quantize(Decimal(1).scaleb(-CURRENCY_DECIMALS.get(currency, 2)), rounding=ROUND_HALF_UP)
 
 
-def rate(base: str, deposit: str, quote: str, price: Decimal) -> Decimal:
+def rate(base: str, deposit: str, quote: str, price: Decimal, mids: dict | None = None) -> Decimal:
     """CONV_RATE (Josh's definition): base currency -> deposit currency.
 
     When the deposit currency is the quote currency the trade's own price is
-    the rate, so quote -> deposit (rate / price) is exactly 1.
+    the rate, so quote -> deposit (rate / price) is exactly 1. Other pairs
+    convert at `mids` (XCore symbol -> mid), by default the fixed MIDS; end of
+    day passes the snapshot's mids.
     """
+    mids = MIDS if mids is None else mids
     if base == deposit:
         return Decimal(1)
     if quote == deposit:
         return price
     for a, b, inverse in ((base, deposit, False), (deposit, base, True)):
-        if f"{a}/{b}" in MIDS:
-            mid = Decimal(MIDS[f"{a}/{b}"])
+        if f"{a}/{b}" in mids:
+            mid = Decimal(str(mids[f"{a}/{b}"]))
             return 1 / mid if inverse else mid
-    return rate(base, "USD", "", Decimal(0)) * rate("USD", deposit, "", Decimal(0))
+    return rate(base, "USD", "", Decimal(0), mids) * rate("USD", deposit, "", Decimal(0), mids)
 
 
 def close_quote(row: dict, side: str, mid: Decimal) -> Decimal:
@@ -130,17 +133,51 @@ TICKET_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD, t.VOLUME, t.OPEN_TIME,
               "WHERE t.SERVER = 'trade/mt4' AND t.TICKET = %s")
 
 
+def ticket_row(cols: list[str], values: tuple) -> dict:
+    t = dict(zip(cols, values))
+    for k in ("OPEN_PRICE", "CLOSE_PRICE", "CONV_RATE1", "CONV_RATE2", "COMMISSION", "COMMISSION_AGENT", "SWAPS"):
+        t[k] = dec(t[k])
+    t["QUOTE"] = t["XCORE_SYMBOL"].split("/")[1] if "/" in t["XCORE_SYMBOL"] else "USD"
+    return t
+
+
 def load_ticket(cur, ticket: int) -> dict:
     cur.execute(TICKET_SQL, (ticket,))
     cols = [c[0] for c in cur.description]
     rows = cur.fetchall()
     if not rows:
         raise SystemExit(f"no ticket {ticket}")
-    t = dict(zip(cols, rows[0]))
-    for k in ("OPEN_PRICE", "CLOSE_PRICE", "CONV_RATE1", "CONV_RATE2", "COMMISSION", "COMMISSION_AGENT", "SWAPS"):
-        t[k] = dec(t[k])
-    t["QUOTE"] = t["XCORE_SYMBOL"].split("/")[1] if "/" in t["XCORE_SYMBOL"] else "USD"
-    return t
+    return ticket_row(cols, rows[0])
+
+
+OPEN_TICKETS_SQL = TICKET_SQL.replace("t.TICKET = %s", f"t.CMD IN (0, 1) AND t.CLOSE_TIME = '{OPEN_DATE}' "
+                                                       "AND t.VOLUME > 0 ORDER BY t.TICKET")
+
+
+def mark_open_tickets(cur, mids: dict) -> list[str]:
+    """End of day: float every open ticket's CLOSE_PRICE and PROFIT to the
+    price snapshot (`mids`: XCore symbol -> mid), as MT4 does continuously.
+    The close price is the opposite side with the login's bridge markup and
+    group spread (none for giveup logins, which aren't in the bridge);
+    conversion is at the snapshot too. CONV_RATE2 stays 0 while open."""
+    cur.execute(TRADABLE_SQL)
+    cols = [c[0] for c in cur.description]
+    bridge = {(r["LOGIN"], r["SYMBOL"]): r for r in (dict(zip(cols, v)) for v in cur.fetchall())}
+    cur.execute(OPEN_TICKETS_SQL)
+    cols = [c[0] for c in cur.description]
+    tickets = [ticket_row(cols, v) for v in cur.fetchall()]
+    for t in tickets:
+        row = bridge.get((t["LOGIN"], t["SYMBOL"])) or {}
+        quote_row = dict(DIGITS=t["DIGITS"], XCORE_SYMBOL=t["XCORE_SYMBOL"], SPREAD_DIFF=row.get("SPREAD_DIFF") or 0,
+                         MARKUP_BID=dec(row.get("MARKUP_BID") or 0), MARKUP_ASK=dec(row.get("MARKUP_ASK") or 0))
+        side = "buy" if t["CMD"] == 0 else "sell"
+        close_price = close_quote(quote_row, side, dec(mids[t["XCORE_SYMBOL"]]))
+        conv = rate(t["BASE"], t["DEPOSIT"], t["QUOTE"], close_price, mids)
+        pl = profit(side, contracts(t, t["VOLUME"]), t["OPEN_PRICE"], close_price, conv, t["DEPOSIT"], t["BASE"],
+                    t["QUOTE"])
+        cur.execute("UPDATE mt4.MT4_TRADES SET CLOSE_PRICE = %s, PROFIT = %s WHERE SERVER = 'trade/mt4' AND TICKET = %s",
+                    (close_price, pl, t["TICKET"]))
+    return [f"{len(tickets)} open tickets marked to the snapshot"]
 
 
 def contracts(t: dict, volume: int) -> Decimal:

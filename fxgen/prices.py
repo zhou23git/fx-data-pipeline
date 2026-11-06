@@ -43,6 +43,13 @@ def snapshot_prices(cur, when: datetime, rng: random.Random) -> list[str]:
     return log
 
 
+def snapshot_mids(cur) -> dict:
+    """XCore symbol -> mid of the current snapshot, for end-of-day marking and conversion."""
+    cur.execute("SELECT r.XCORE_SYMBOL, p.BID, p.ASK FROM mt4.MT4_PRICES p "
+                "JOIN reference.mt4_symbol_reference r ON r.MT4_SYMBOL = p.SYMBOL WHERE p.SERVER = 'trade/mt4'")
+    return {xcore: (dec(bid) + dec(ask)) / 2 for xcore, bid, ask in cur.fetchall()}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--time", type=datetime.fromisoformat, required=True, help="GMT time of the snapshot")
