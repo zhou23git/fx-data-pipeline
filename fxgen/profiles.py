@@ -145,17 +145,21 @@ def run_random(cur, day: date) -> list[str]:
     times = sorted(start + timedelta(milliseconds=rng.randrange(span_ms))
                    for _ in range(rng.randint(*CHANGES_PER_DAY)))
 
-    messages = []
-    for when in times:
-        profile = lookup(cur, "profile", rng.choice(RANDOM_PROFILES))
-        rows = profile_rows(cur, profile[0])
-        sym = rng.choice(sorted(rows))
-        size = rows[sym][2]
-        step = rng.randint(*STEP_POINTS) * Decimal(1).scaleb(-digits[sym])
-        up = size == 0 or rng.random() < 0.5
-        new_size = size + step if up else max(Decimal(0), size - step)
-        messages.append(set_markup(cur, profile, sym, rows[sym], new_size, digits[sym], when))
+    messages = [random_change(cur, when, rng, digits) for when in times]
     return [m for m in messages if m]
+
+
+def random_change(cur, when: datetime, rng: random.Random, digits: dict | None = None) -> str | None:
+    """One random markup change at `when`, by the rule above, logged."""
+    digits = digits or symbol_digits(cur)
+    profile = lookup(cur, "profile", rng.choice(RANDOM_PROFILES))
+    rows = profile_rows(cur, profile[0])
+    sym = rng.choice(sorted(rows))
+    size = rows[sym][2]
+    step = rng.randint(*STEP_POINTS) * Decimal(1).scaleb(-digits[sym])
+    up = size == 0 or rng.random() < 0.5
+    new_size = size + step if up else max(Decimal(0), size - step)
+    return set_markup(cur, profile, sym, rows[sym], new_size, digits[sym], when)
 
 
 def main() -> None:

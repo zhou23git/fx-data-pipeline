@@ -12,6 +12,7 @@ and dbt on realistic, messy sources.
 | `mysql/mt4_seed.sql`: MT4 config rows and one-off accounts | In progress |
 | `mysql/mt4_trades.sql`: MT4 trades table (tickets, plus balance and credit rows) | Ready |
 | `mysql/mt4_daily.sql`: MT4 daily summaries (one row per client statement) | Ready |
+| `mysql/reference - eod time.sql`: `reference.eod_time`, open and close in GMT and server offset for every calendar day of 2026-2027 | Ready |
 | `mysql/mt4_prices.sql`: MT4 prices table (latest quote per symbol, the end-of-day snapshot) | Ready |
 | `mysql/xcore_config.sql`: XCore config tables and config audit log for the `xcore` schema | Ready |
 | `mysql/xcore_seed.sql`: providers, XCore symbols, liquidity pools, profiles | In progress |
@@ -20,10 +21,10 @@ and dbt on realistic, messy sources.
 | `mysql/xcore_trades.sql`: XCore order, order MT4 and leg tables | Ready |
 | `fxgen/orders.py`: simulates MT4 -> XCore executions; `sample` writes 10 showcase trade sets | First version, under review |
 | `fxgen/mt4trades.py`: MT4 tickets: open, close, close by hedge, giveup booking, deposits and withdrawals | First version |
-| `fxgen/hourly.py`: the hourly process, one simulated hour of direct and API trading per run | First version; client deposits and withdrawals; end of day on the 16:55 New York run: swap rates, price snapshot, open tickets marked to the snapshot, swaps charged, statements written |
+| `fxgen/hourly.py`: the hourly process, one simulated hour of direct and API trading per run | First version; client deposits and withdrawals; end of day at 16:59:59 New York, after the 16:00 hour's trades: swap rates, price snapshot, open tickets marked to the snapshot, swaps charged, statements written; with the market closed, Saturday and Sunday end of day writes statements only |
 | `fxgen/prices.py`: fake end-of-day prices in MT4_PRICES | First version |
 | `fxgen/statements.py`: end-of-day client statement CSVs and their MT4_DAILY rows | First version |
-| `fxgen/daily.py`: daily run, every market hour since the last run up to 17:00 New York | First version; schedule disabled |
+| `fxgen/daily.py`: daily run at 16:55 New York, every market hour since the last run up to 17:00 New York, including end of day, plus weekend statement runs | First version; schedule disabled |
 | `fxgen/swaps.py`: daily swap rates in MT4_SYMBOLS (buys pay, sells get paid), charged to open tickets at end of day | First version |
 | `fxgen/profiles.py`: sets profile markup and pool per symbol, plus random daily markup, logging each change | Ready |
 | `fxgen/`: trade data generator | Work in progress, not runnable yet; will be adapted to read config from MySQL |

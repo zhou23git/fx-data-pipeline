@@ -1,17 +1,18 @@
 """End-of-day price snapshot in mt4.MT4_PRICES.
 
-  python -m fxgen.prices --time "2026-10-28 20:55:00" --seed 1
+  python -m fxgen.prices --time "2026-10-28 20:59:59" --seed 1
 
 Writes a fake bid and ask for every MT4 symbol, overwriting the previous
 snapshot. The plain, .retail and .b2b versions of a pair share one quote,
-since they are the same market. The hourly process calls this on its 16:55
-New York run; Josh read the table at 16:59:59 New York time for end of day.
+since they are the same market. The hourly process calls this at end of day,
+16:59:59 New York, after the last hour's trades; Josh read the table at
+16:59:59 New York time for end of day.
 """
 from __future__ import annotations
 
 import argparse
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -19,13 +20,18 @@ from fxgen.db import connect
 from fxgen.orders import HALF_SPREAD_POINTS, MIDS, dec
 
 NEW_YORK = ZoneInfo("America/New_York")
-SNAPSHOT_NY = (16, 55)   # New York time of the run that writes the snapshot
+SNAPSHOT_NY = (16, 59, 59)   # New York time of end of day: the last second of the trading day
+
+
+def eod_of(hour: datetime) -> datetime:
+    """The last second of a GMT hour: end of day when that hour is 16:00 New York."""
+    return hour + timedelta(minutes=59, seconds=59)
 
 
 def is_snapshot_run(when: datetime) -> bool:
-    """Whether a GMT run time is 16:55 in New York (EDT or EST)."""
+    """Whether a GMT time is 16:59:59 in New York (EDT or EST), the end of day."""
     ny = when.replace(tzinfo=ZoneInfo("UTC")).astimezone(NEW_YORK)
-    return (ny.hour, ny.minute) == SNAPSHOT_NY
+    return (ny.hour, ny.minute, ny.second) == SNAPSHOT_NY
 
 
 def snapshot_prices(cur, when: datetime, rng: random.Random) -> list[str]:

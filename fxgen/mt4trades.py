@@ -214,8 +214,9 @@ def partial_close(cur, t: dict, keep: int, comment: str) -> dict:
 
 def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) -> list[str]:
     """Close the selected open tickets against each other (domain notes,
-    "Close by hedge"). Nothing is sent to XCore. Close time and CONV_RATE2
-    are set when the process completes (`when`), not from ticket 2."""
+    "Close by hedge"). Nothing is sent to XCore. Ticket 1's close time and
+    CONV_RATE2 are set when the process completes (`when`); the emptied
+    ticket 2 closes at its own open time."""
     ts = [load_ticket(cur, n) for n in tickets]
     if len({(t["LOGIN"], t["SYMBOL"]) for t in ts}) != 1:
         raise SystemExit("close by hedge needs tickets of one login and one symbol")
@@ -253,12 +254,12 @@ def close_by_hedge(cur, tickets: list[int], when: datetime, rng: random.Random) 
             (main["VOLUME"], done, close_price, conv2, main["COMMISSION"] + other["COMMISSION"],
              main["COMMISSION_AGENT"] + other["COMMISSION_AGENT"], main["SWAPS"] + other["SWAPS"], pl,
              main["TICKET"]))
-        # ticket 2 is emptied
+        # ticket 2 is emptied, and closes at its own open time
         cur.execute(
-            "UPDATE mt4.MT4_TRADES SET VOLUME = 0, CLOSE_TIME = %s, CLOSE_PRICE = OPEN_PRICE, CONV_RATE2 = %s, "
+            "UPDATE mt4.MT4_TRADES SET VOLUME = 0, CLOSE_TIME = OPEN_TIME, CLOSE_PRICE = OPEN_PRICE, CONV_RATE2 = %s, "
             "COMMISSION = 0, COMMISSION_AGENT = 0, SWAPS = 0, PROFIT = 0, COMMENT = %s "
             "WHERE SERVER = 'trade/mt4' AND TICKET = %s",
-            (done, conv2, f"close by hedge: {main['TICKET']}", other["TICKET"]))
+            (conv2, f"close by hedge: {main['TICKET']}", other["TICKET"]))
         log.append(f"ticket {main['TICKET']} closed by {other['TICKET']} at {close_price}: "
                    f"{main['VOLUME'] / 100:g} lots, P/L {pl}")
     return log
@@ -279,7 +280,7 @@ def balance(cur, login: int, amount: str, when: datetime, comment: str) -> str:
 
 # Open positions. Placeholders until Josh gives his two queries (direct
 # clients and giveup logins are fetched separately).
-DIRECT_OPEN_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD FROM mt4.MT4_TRADES t "
+DIRECT_OPEN_SQL = ("SELECT t.TICKET, t.LOGIN, t.SYMBOL, t.CMD, t.OPEN_TIME FROM mt4.MT4_TRADES t "
                    "WHERE t.SERVER = 'trade/mt4' AND t.CMD IN (0, 1) AND t.CLOSE_TIME = '1970-01-01 00:00:00' "
                    "AND t.LOGIN IN (SELECT LOGIN FROM reference.connector_account_logins) "
                    "ORDER BY t.OPEN_TIME, t.TICKET")

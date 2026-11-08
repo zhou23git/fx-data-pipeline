@@ -2,14 +2,16 @@
 
   python -m fxgen.daily [--dry-run] [--log logs/daily.log]
 
-Scheduled at 16:30 New York time. It picks up from the hour after the last
-simulated event and runs fxgen.hourly for each hour up to today's 17:00 New
+Scheduled at 16:55 New York time, Josh's last hourly run of the day. It
+picks up from the hour after the last simulated event and runs fxgen.hourly for each hour up to today's 17:00 New
 York close, so it simulates the rest of the trading day "into the future",
-including the 16:55 end-of-day run (swap rates, price snapshot, swaps).
+including end of day at 16:59:59 (swap rates, price snapshot, swaps,
+statements), which really runs just after the close.
 A missed day is caught up on the next run.
 
-The FX market is closed from Friday 17:00 to Sunday 17:00 New York time;
-those hours are skipped.
+The FX market is closed from Friday 17:00 to Sunday 17:00 New York time.
+Those hours don't trade, but end of day on Saturday and Sunday still writes statements
+(fxgen.hourly.closed_hour). A rerun over a weekend rewrites the same files.
 """
 from __future__ import annotations
 
@@ -20,24 +22,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fxgen.db import connect
-from fxgen.hourly import run_hour
+from fxgen.hourly import CLOSE_HOUR, closed_hour, market_open, run_hour
+from fxgen.prices import eod_of, is_snapshot_run
 
 NEW_YORK, UTC = ZoneInfo("America/New_York"), ZoneInfo("UTC")
-CLOSE_HOUR = 17   # New York trading day ends (and the week opens on Sunday) at 17:00
-
-
-def market_open(hour: datetime) -> bool:
-    """Whether the GMT hour starting at `hour` is inside the FX trading week."""
-    ny = hour.replace(tzinfo=UTC).astimezone(NEW_YORK)
-    if ny.weekday() == 4:                        # Friday: open until 17:00
-        return ny.hour < CLOSE_HOUR
-    if ny.weekday() == 5:                        # Saturday
-        return False
-    if ny.weekday() == 6:                        # Sunday: open from 17:00
-        return ny.hour >= CLOSE_HOUR
-    return True
-
-
 def next_hour(cur) -> datetime:
     """The GMT hour after the last simulated event."""
     cur.execute("SELECT MAX(GREATEST(OPEN_TIME, CLOSE_TIME)) FROM mt4.MT4_TRADES WHERE SERVER = 'trade/mt4'")
@@ -68,17 +56,17 @@ def main() -> None:
     hours = []
     hour = start
     while hour < end:
-        if market_open(hour):
+        if market_open(hour) or is_snapshot_run(eod_of(hour)):
             hours.append(hour)
         hour += timedelta(hours=1)
     print(f"[{datetime.now(UTC):%Y-%m-%d %H:%M:%S} GMT] daily run: {start:%Y-%m-%d %H:00} to {end:%Y-%m-%d %H:00} GMT, "
-          f"{len(hours)} market hours")
+          f"{sum(map(market_open, hours))} market hours, {sum(not market_open(h) for h in hours)} closed-day statement runs")
     if args.dry_run or not hours:
         conn.close()
         return
     rng = random.Random(int(hours[0].replace(tzinfo=UTC).timestamp()))
     for hour in hours:
-        log = run_hour(cur, hour, rng)
+        log = run_hour(cur, hour, rng) if market_open(hour) else closed_hour(cur, hour)
         conn.commit()
         print(f"{log[0]}  {log[-1]}")
     print(f"[{datetime.now(UTC):%Y-%m-%d %H:%M:%S} GMT] done")

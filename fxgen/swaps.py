@@ -11,9 +11,9 @@ pair share one draw. Symbols with swaps disabled are left alone.
 At end of day every open buy or sell ticket on a swap-enabled symbol gets one
 day's swap added to SWAPS: contracts x SWAP_LONG (buys) or SWAP_SHORT
 (sells), a quote-currency amount converted to the deposit currency at the
-end-of-day price, as PROFIT is. The hourly process does both on its 16:55 New
-York run, after that hour's trades: rates first, then the price snapshot,
-then the charge.
+end-of-day price, as PROFIT is. The hourly process does both at end of day,
+16:59:59 New York, after the 16:00 hour's trades: rates first, then the
+price snapshot, then the charge.
 
   python -m fxgen.swaps charge --time "2026-10-28 20:55:00"
 """

@@ -71,6 +71,10 @@ in Snowflake (standalone) and dbt. Order of work, as Josh decided:
     and `SWAP_SHORT` are set daily by a plugin, so the config leaves them
     NULL. Only FX has swaps enabled. How they are made up is under "Swap
     rates".
+- Leverage (Josh, 2026-11-06): B2B accounts got 50-100x and retail got
+  500x. Nothing in the config holds leverage yet. Real MT4 keeps it per
+  account (`UserRecord.leverage`, `LEVERAGE` in the MT4_USERS export),
+  with a default from the group.
 - Entities: Equiti separated entities with login ranges and dedicated MT4
   servers, not with the group's `COMPANY` field. Here there is one server, and
   login ranges simulate the entities.
@@ -720,6 +724,12 @@ program that will fill `MT4_TRADES`.
   the client can select a list of them and close them against each other.
 
 **Close by hedge.**
+0. Only tickets opened before the current trading day are used: close by
+   hedge happens at least one business day after both trades open (Josh,
+   2026-11-07). Hedging a ticket opened the same day makes it hard to
+   rebuild the open-position snapshot at end of day. A ticket opened on
+   Friday can be hedged from Sunday 17:00 New York, the start of Monday's
+   trading day.
 1. Make two lists, one of buys and one of sells, each sorted oldest first.
    Josh doesn't know MT4's real order, but oldest first does no harm.
 2. Take the top of each list.
@@ -763,8 +773,8 @@ program that will fill `MT4_TRADES`.
    - Commission, agent commission and swaps = 0, now that they have moved to
      ticket 1.
    - Close price = its open price, so profit is 0.
-   - Close time = when the close-by-hedge process completes, the same as
-     ticket 1.
+   - Close time = its own open time (Josh, 2026-11-07). Before that the
+     simulation used the process completion time, the same as ticket 1.
    - Comment = `close by hedge: [ticket 1]`.
 6. Keep pairing down the lists until one runs out. The lists can change as
    it goes: a remainder ticket from step 3 takes the parent's place.
@@ -892,10 +902,18 @@ choices, not Josh's rules. **(assumed)**
 - The kept 2026-10-28 day predates this, so its clients traded unfunded.
   They get a first deposit at their next trade.
 
+**Clients lose on average, and that's realistic (Josh, 2026-11-06).** Prices
+have no trend, so price moves average out, while every round trip pays
+spread, markup and commission. Client P/L therefore drifts steadily
+negative. Josh confirms that's how it really was. Don't "fix" it.
+
 **Simulation settings.** These are in `fxgen/hourly.py`.
 - Each client login trades in an hour with probability 1 - 0.5^(1/24), one
   to three trades.
-- Each open ticket closes in an hour with probability 25%.
+- Each open ticket closes in an hour with probability 25%. A fifth of
+  direct tickets are held for days and close with probability 2% an hour,
+  so some last past end of day and can be closed by hedge. Which tickets are
+  held is drawn from the ticket number, so no field stores it. **(assumed)**
 - 30% of login-symbol pairs holding both sides are closed by hedge.
 - API orders are added until they make up 40-50% of the hour's USD
   notional.
@@ -919,9 +937,9 @@ Josh didn't keep floating prices. For end of day he queried MT4 for prices at
   symbol. It has one row per symbol, overwritten on each update, so there is
   no history. Josh's fields: symbol, bid, ask, and the last update time in
   GMT (`MODIFY_TIME`).
-- The hourly process writes fake prices on its 16:55 New York run:
-  20:55 GMT while the US is on daylight time, 21:55 GMT after 2026-11-01
-  (`fxgen/prices.py`).
+- The hourly process writes fake prices at end of day, stamped 16:59:59
+  New York: 20:59:59 GMT while the US is on daylight time, 21:59:59 GMT
+  after 2026-11-01 (`fxgen/prices.py`). Before 2026-11-06 it was 16:55.
 - Prices are raw quotes, before any group `SPREAD_DIFF`. The plain, `.retail`
   and `.b2b` versions of a pair share one quote. **(assumed)**
 
@@ -963,6 +981,14 @@ after its statement, the carried balance and a recalculation will disagree.
 day, because tickets change in place afterwards. There is one file per login
 with an open ticket at the close or any transaction that day.
 
+**Statements come every day** (Josh, 2026-11-06). They are generated on
+weekends and holidays too, not only on trading days. With the market
+closed, the simulator still runs end of day on Saturday and Sunday, but
+only to write statements, with no trades, swaps or new prices. A position
+held over the weekend therefore shows Friday's floating values and swaps on
+its Saturday and Sunday statements, and the balance carries forward
+unchanged **(assumed)**. The simulator has no holidays yet.
+
 **Floating values at end of day.** Before the statements are written, every
 open ticket's `CLOSE_PRICE` and `PROFIT` are floated to the price snapshot:
 - the close price is the opposite side of the book, with the login's bridge
@@ -991,8 +1017,8 @@ games with it at the broker's expense.
 before end of day, but the LP only charges the next day. The LP's estimate
 isn't promised and is sometimes far off.
 
-**The simulation keeps it simple** (`fxgen/swaps.py`). This is run on the
-16:55 New York run, before the price snapshot.
+**The simulation keeps it simple** (`fxgen/swaps.py`). This runs at end of
+day, before the price snapshot.
 - For each symbol with `SWAP_ENABLE` = 1, a random 1-5 point differential
   is drawn and stored as a price: `SWAP_LONG` = -n x `POINT`, `SWAP_SHORT`
   = +n x `POINT`.
@@ -1002,8 +1028,12 @@ isn't promised and is sometimes far off.
 - The plain, `.retail` and `.b2b` versions of a pair share one draw.
   **(assumed)**
 
-**End of day.** The 16:55 New York run is the simulated end of day. After
-that hour's trades, it runs three steps in order:
+**End of day** (Josh, 2026-11-06). Josh's last hourly run of the day is at
+16:55 New York, and the EOD process runs after the close at 16:59:59. The
+simulation's 16:00 New York hour does both: the hour's trades (still
+between :00 and :55), then end of day stamped 16:59:59. The daily schedule
+runs at 16:55 New York to match. Before 2026-11-06, end of day was stamped
+16:55. End of day runs these steps in order:
 1. Load the day's swap rates.
 2. Write the price snapshot.
 3. Add one day's swap to every ticket still open: CMD 0/1 on a
@@ -1046,6 +1076,20 @@ These are not simulated yet:
   with US daylight saving: about 21:00 GMT in US summer time, 22:00 GMT in
   US winter time. Josh will provide a reference file of GMT EOD times. The
   trading day, daily records and swap dates should come from that file.
+- **`reference.eod_time`** (Josh, 2026-11-06; `mysql/reference - eod time.sql`)
+  is that reference, with one row per calendar day for 2026-2027:
+
+  | Column | Meaning |
+  |---|---|
+  | `TRADE_DATE` | The day the trading day closes on |
+  | `OPEN_TIME` | 17:00:00 New York the day before, in GMT |
+  | `CLOSE_TIME` | 16:59:59 New York on `TRADE_DATE`, in GMT |
+  | `GMT_OFFSET` | 2 under EST, 3 under EDT (the usual GMT+2/+3 FX server clock, where the New York close is midnight) |
+
+  Weekends and holidays get rows too. They aren't FX trading days, but the
+  broker can make manual adjustments or indemnifications on a weekend, and
+  those need a trade date. Rows join without gaps, so a Sunday on which the
+  clocks change lasts 23 or 25 hours.
 - The exercise starts close to a DST change (US DST ends 2026-11-01), which
   Josh welcomes: the EOD shift will show up early in the data.
 
