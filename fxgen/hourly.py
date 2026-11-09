@@ -14,13 +14,13 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
      trading conditions.
   2. Fetch open tickets and fully close a random subset (order MT4, XCore
      order and legs, ticket closed). A fifth of tickets are held for days
-     and close far less often, so some last past end of day.
+     (about 8 on average), so some last long enough to be closed by hedge.
   3. Deposits and withdrawals for a random few clients.
   4. Open trades for a random set of bridge logins. A client with no
      deposit yet makes a first deposit just before its first trade.
-  5. Fetch open tickets again and close some by hedge, at :55. Only tickets
-     opened before the current trading day qualify, so both sides have
-     been open for at least one end of day.
+  5. Fetch open tickets again and close some by hedge, at :55. Every ticket
+     used opened on an earlier trading day than the hedge (never Monday buy,
+     Monday sell, Monday close; nor Thursday buy, Friday sell, Friday close).
 
   API clients
   6. Run the API account reference.
@@ -35,14 +35,18 @@ Each hour, as Josh runs it at about :55 (domain notes, "Hourly process"):
   10. Load the day's swap rates (mt4.MT4_SYMBOLS).
   11. Write the price snapshot (mt4.MT4_PRICES).
   12. Mark every open ticket's CLOSE_PRICE and PROFIT to the snapshot.
-  13. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
-  14. Write each active login's statement CSV (out/statements/<day>/).
+  13. Copy the open tickets to reporting.eod_snapshots at 16:59:55.
+  14. Add one day's swap to every remaining open ticket (MT4_TRADES.SWAPS).
+  15. Copy the open tickets again at 17:00:05, now with the swap.
+  16. Write each active login's statement CSV (out/statements/<day>/).
 
   Market closed (Friday 17:00 to Sunday 17:00 New York): no trading. End of
   day on Saturday and Sunday still writes statements (Josh: they come
   every day, weekends and holidays included), from Friday's floating values.
 
 Times are simulated: events fall at random seconds between :00 and :55.
+Equiti allowed no trading from 16:58 to 17:02 New York, so the 17:00 hour's
+events start at 17:02.
 """
 from __future__ import annotations
 
@@ -58,7 +62,8 @@ from fxgen.mt4trades import (DIRECT_OPEN_SQL, OPEN_DATE, api_order_row, balance,
                              close_trade, mark_open_tickets, open_trade, rate)
 from fxgen.orders import API_SQL, MIDS, TRADABLE_SQL, lot_contracts
 from fxgen.prices import eod_of, is_snapshot_run, snapshot_mids, snapshot_prices
-from fxgen.statements import day_bounds, write_statements
+from fxgen.snapshots import AFTER_SWAPS, BEFORE_SWAPS, snapshot_open
+from fxgen.statements import write_statements
 from fxgen.profiles import CHANGES_PER_DAY, random_change
 from fxgen.swaps import charge_swaps, set_swaps
 
@@ -66,8 +71,9 @@ TRADE_CHANCE = 1 - 0.5 ** (1 / 24)   # per login per hour: about half the direct
 TRADES_PER_LOGIN = (1, 3)
 CLOSE_CHANCE = 0.25                  # per open ticket per hour: about 90% are gone within 8 hours
 HOLD_SHARE = 0.2                     # share of direct tickets the client holds for days
-HOLD_CLOSE_CHANCE = 0.02             # per held ticket per hour: about 2 days on average
-HEDGE_CHANCE = 0.3                   # per login and symbol holding both sides
+HOLD_CLOSE_CHANCE = 0.005            # per held ticket per hour: about 8 days on average
+HEDGE_CHANCE = 0.02                  # per login and symbol holding both sides, per hour: about 40% a day
+HEDGE_MIN_DAYS = 1                   # business days from every hedged ticket's trading day to the hedge
 API_SHARE = (0.40, 0.50)             # API share of the hour's volume (USD notional)
 DIRECT_LOTS = ["0.01", "0.05", "0.1", "0.2", "0.5", "1", "2", "3", "5"]
 DIRECT_WEIGHTS = [10, 10, 20, 15, 15, 15, 8, 4, 3]
@@ -99,8 +105,17 @@ def pick_lots(row: dict, choices: list[str], weights: list[int] | None, rng: ran
     return lots
 
 
+NO_TRADING_AFTER = 2 * 60   # seconds after 17:00 New York before trading reopens (Equiti)
+
+
+def first_second(hour: datetime) -> int:
+    """The hour's first second with trading allowed: 17:02 in the 17:00 New York hour."""
+    ny = hour.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    return NO_TRADING_AFTER if ny.hour == CLOSE_HOUR else 0
+
+
 def at(hour: datetime, rng: random.Random) -> datetime:
-    return hour + timedelta(seconds=rng.randint(0, 55 * 60 - 1))
+    return hour + timedelta(seconds=rng.randint(first_second(hour), 55 * 60 - 1))
 
 
 def deposit_amount(group: str, currency: str, rng: random.Random) -> Decimal:
@@ -156,6 +171,11 @@ def held(ticket: int) -> bool:
     """Whether the client holds this ticket for days (HOLD_SHARE of tickets).
     Drawn from the ticket number, so it needs no stored field and reruns repeat."""
     return random.Random(f"hold:{ticket}").random() < HOLD_SHARE
+
+
+def business_days(start, end) -> int:
+    """Weekdays after trading day `start` up to and including `end`: Tuesday to Friday is 3."""
+    return sum((start + timedelta(days=n)).weekday() < 5 for n in range(1, (end - start).days + 1))
 
 
 def trade_date(hour: datetime):
@@ -243,7 +263,7 @@ def run_hour(cur, hour: datetime, rng: random.Random, logins: set[int] | None = 
                 events.append((at(hour, rng), rng.choice(rows)))
     for when, row in sorted(events, key=lambda e: e[0]):
         if row["LOGIN"] in clients and row["LOGIN"] not in funded:
-            first = hour + timedelta(seconds=rng.randint(0, int((when - hour).total_seconds())))
+            first = hour + timedelta(seconds=rng.randint(first_second(hour), int((when - hour).total_seconds())))
             amount = deposit_amount(row["GROUP"], row["ACCOUNT_CURRENCY"], rng)
             log.append("cash   " + balance(cur, row["LOGIN"], str(amount), first, ""))
             funded.add(row["LOGIN"])
@@ -252,13 +272,14 @@ def run_hour(cur, hour: datetime, rng: random.Random, logins: set[int] | None = 
                                          when, rng))
         direct_usd += usd_notional(row["XCORE_SYMBOL"], lot_contracts(row, lots))
 
-    # 5. close by hedge at :55, only tickets opened before today's trading day (Josh, 2026-11-07:
-    # at least one business day after both trades open, so open positions at each end of day stay clear)
-    day_start = day_bounds(trade_date(hour))[0]
+    # 5. close by hedge at :55 (Josh, 2026-11-07: never on a day either side opened, e.g. buy Monday,
+    # sell Tuesday or Thursday, close by hedge Friday). Every ticket used opened at least
+    # HEDGE_MIN_DAYS business days before today's trading day; held tickets vary the gaps.
+    today = trade_date(hour)
     cur.execute(DIRECT_OPEN_SQL)
     positions = defaultdict(list)
     for t in rows_of(cur):
-        if t["OPEN_TIME"] < day_start:
+        if business_days(trade_date(t["OPEN_TIME"]), today) >= HEDGE_MIN_DAYS:
             positions[(t["LOGIN"], t["SYMBOL"])].append(t)
     for (login, symbol), ts in positions.items():
         if len({t["CMD"] for t in ts}) == 2 and rng.random() < HEDGE_CHANCE:
@@ -294,16 +315,18 @@ def run_hour(cur, hour: datetime, rng: random.Random, logins: set[int] | None = 
     # 8-9. giveups for the hour, booked in order-time order
     log += ["giveup " + line for line in book_window(cur, hour, hour + timedelta(hours=1), rng)
             if not line.startswith("order ")]
-    # 10-14. end of day, 16:59:59 New York, after the 16:00 hour's trades: the day's swap rates,
-    # the price snapshot, marking, one day's swap on every open ticket, then statements
+    # 10-16. end of day, 16:59:59 New York, after the 16:00 hour's trades: the day's swap rates,
+    # the price snapshot, marking, open positions before and after one day's swap, then statements
     eod = eod_of(hour)
     if is_snapshot_run(eod):
+        day = eod.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York")).date()
         log += ["swap   " + line for line in set_swaps(cur, rng)]
         log += ["price  " + line for line in snapshot_prices(cur, eod, rng)]
         mids = snapshot_mids(cur)
         log += ["mark   " + line for line in mark_open_tickets(cur, mids)]
+        log.append("snap   " + snapshot_open(cur, day, eod + BEFORE_SWAPS))
         log += ["swap   " + line for line in charge_swaps(cur, eod, mids)]
-        day = eod.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York")).date()
+        log.append("snap   " + snapshot_open(cur, day, eod + AFTER_SWAPS))
         log += ["stmt   " + line for line in write_statements(cur, day)]
     log.append(f"direct {direct_usd:,.0f} USD, API {api_usd:,.0f} USD "
                f"({api_usd / (direct_usd + api_usd) * 100 if direct_usd + api_usd else 0:.0f}%)")

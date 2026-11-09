@@ -724,12 +724,20 @@ program that will fill `MT4_TRADES`.
   the client can select a list of them and close them against each other.
 
 **Close by hedge.**
-0. Only tickets opened before the current trading day are used: close by
-   hedge happens at least one business day after both trades open (Josh,
-   2026-11-07). Hedging a ticket opened the same day makes it hard to
-   rebuild the open-position snapshot at end of day. A ticket opened on
-   Friday can be hedged from Sunday 17:00 New York, the start of Monday's
-   trading day.
+0. Close by hedge never happens on a trading day that either side opened
+   on (Josh, 2026-11-07). A same-day hedge makes the open-position
+   snapshot at end of day hard to rebuild.
+
+   | Example | OK? |
+   |---|---|
+   | Buy Monday, sell Tuesday, close by hedge Friday | Yes |
+   | Buy Monday, sell Thursday, close by hedge Friday | Yes |
+   | Buy Monday, sell Monday, close by hedge Monday | No |
+   | Buy Thursday, sell Friday, close by hedge Friday | No: the sell opened that day |
+
+   Josh wants the gaps varied. In the simulation, every ticket used opened
+   at least 1 business day before the hedge's trading day, and the gaps vary
+   with how long held tickets last. Weekends don't count.
 1. Make two lists, one of buys and one of sells, each sorted oldest first.
    Josh doesn't know MT4's real order, but oldest first does no harm.
 2. Take the top of each list.
@@ -911,10 +919,12 @@ negative. Josh confirms that's how it really was. Don't "fix" it.
 - Each client login trades in an hour with probability 1 - 0.5^(1/24), one
   to three trades.
 - Each open ticket closes in an hour with probability 25%. A fifth of
-  direct tickets are held for days and close with probability 2% an hour,
-  so some last past end of day and can be closed by hedge. Which tickets are
+  direct tickets are held for days and close with probability 0.5% an hour
+  (about 8 days), so some last long enough to be closed by hedge. Which tickets are
   held is drawn from the ticket number, so no field stores it. **(assumed)**
-- 30% of login-symbol pairs holding both sides are closed by hedge.
+- A login-symbol pair holding both sides old enough to qualify is closed by
+  hedge with probability 2% an hour (about 40% a day), so hedges spread
+  over several days after they qualify.
 - API orders are added until they make up 40-50% of the hour's USD
   notional.
 - Every bridge login trades, including the House trading logins 20 and 50,
@@ -1047,6 +1057,26 @@ tickets are charged too.
 These are not simulated yet:
 - triple swaps on Wednesdays;
 - weekend and holiday rollovers (they wait for Josh's EOD file).
+
+**No trading around end of day; open-position snapshots** (Josh,
+2026-11-08). Equiti allowed nobody to trade from 2 minutes before to 2
+minutes after end of day: 16:58 to 17:02 New York. In that window Josh took
+two snapshots of every open position:
+
+| Time (New York) | When | What changes |
+|---|---|---|
+| 16:59:55 | Before the day's swap is charged | Nothing yet |
+| 17:00:05 | Right after the swap | Only `SWAPS` |
+
+Because nobody can trade in between, the two snapshots hold the same
+tickets and the same net open position. The simulation writes both to
+`reporting.eod_snapshots` during end of day: open CMD 0/1 tickets as they
+stand in `MT4_TRADES`, after marking to the price snapshot (so `PROFIT` is
+the same in both) and before and after `charge_swaps`. `SnapDate` is the
+trading day being closed, for both snapshots; `SnapTime` is GMT. The
+simulation's 17:00 New York hour starts its events at 17:02. Josh first
+said 17:00:30 for the second snapshot, then 17:00:05; the simulation uses
+17:00:05. Snapshots are only taken on trading days (Monday to Friday).
 
 ### Config history
 
